@@ -66,17 +66,19 @@ def execute_shell(args, ctx):
 
 @register_tool(
     "read_file",
-    "读取文本文件的内容。path 为完整路径（如 D:\\\\work\\note.txt）。lines 为最多读取的行数（默认 100，防止大文件撑爆上下文）。用于查看代码、文档、笔记、配置文件等。",
+    "读取文本文件的内容。path 为完整路径。lines 为本次读取的行数（默认 100）。offset 为起始行号（默认 1；读完前 100 行想继续时，按提示传 offset 续读下一页）。用于查看代码、文档、笔记、配置文件等。",
     {"type": "object", "properties": {
         "path": {"type": "string"},
-        "lines": {"type": "integer", "default": 100}}},
+        "lines": {"type": "integer", "default": 100},
+        "offset": {"type": "integer", "default": 1}}},
 )
 def read_file(args, ctx):
     path = args.get("path", "")
     try:
         lines = int(args.get("lines", 100) or 100)
+        offset = int(args.get("offset", 1) or 1)
     except (TypeError, ValueError):
-        lines = 100
+        lines, offset = 100, 1
     if not path:
         return "路径不能为空"
     if not os.path.isfile(path):
@@ -95,10 +97,16 @@ def read_file(args, ctx):
         return f"读取失败: {e}"
     all_lines = content.splitlines()
     total = len(all_lines)
-    if lines and lines > 0 and total > lines:
-        shown = "\n".join(all_lines[:lines])
-        return f"文件 [{path}] 共 {total} 行，显示前 {lines} 行:\n{shown}\n...（还有 {total - lines} 行未显示）"
-    return f"文件 [{path}] 共 {total} 行:\n{content}"
+    if offset < 1:
+        offset = 1
+    if offset > total:
+        return f"文件只有 {total} 行，offset={offset} 超出范围"
+    end = min(offset + lines - 1, total)
+    shown = "\n".join(all_lines[offset - 1:end])
+    if end < total:
+        return (f"文件 [{path}] 共 {total} 行，显示 {offset}-{end} 行:\n{shown}\n"
+                f"...（还有 {total - end} 行未显示，继续读用 offset={end + 1}）")
+    return f"文件 [{path}] 共 {total} 行（已读完）:\n{shown}"
 
 
 @register_tool(
