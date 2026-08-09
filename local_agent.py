@@ -154,8 +154,8 @@ def collect_prefs(soul_file):
     prefs = parse_soul_prefs(soul_text)
     questions = {
         "称呼": "你想让我怎么称呼你？",
-        "名字": "你给我起的名字是什么？（比如：小弟 / 小枢 / 阿枢...）",
-        "相处方式": "你希望我怎么跟你相处？（比如：简洁直接 / 幽默一点 / 啰嗦一点...）",
+        "名字": "你给我起的名字是什么？",
+        "相处方式": "你希望我怎么跟你相处？",
     }
     for key, q in questions.items():
         if not prefs.get(key):
