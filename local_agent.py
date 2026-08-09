@@ -103,6 +103,72 @@ def load_soul(path=None):
         pass
     return None
 
+# ---------- 灵魂初始化：用户偏好收集（硬规定） ----------
+def parse_soul_prefs(soul_text):
+    """解析灵魂文件里的【用户偏好】区块；返回 {'称呼','名字','相处方式'} 字典"""
+    prefs = {"称呼": "", "名字": "", "相处方式": ""}
+    if "【用户偏好】" in soul_text:
+        block = soul_text.split("【用户偏好】", 1)[1]
+        for key in prefs:
+            for line in block.splitlines():
+                if line.startswith(key + "："):
+                    prefs[key] = line.split("：", 1)[1].strip()
+                    break
+    return prefs
+
+def set_pref(soul_file, key, value):
+    """把一条偏好写入灵魂文件的【用户偏好】区块（无则追加），立即落盘"""
+    try:
+        lines = open(soul_file, encoding="utf-8").read().splitlines()
+    except Exception:
+        lines = []
+    in_block = False
+    found = False
+    new_lines = []
+    for line in lines:
+        if line.strip() == "【用户偏好】":
+            in_block = True
+            new_lines.append(line)
+            continue
+        if in_block and line.strip() == "":
+            in_block = False
+        if in_block and line.startswith(key + "："):
+            new_lines.append(f"{key}：{value}")
+            found = True
+            continue
+        new_lines.append(line)
+    if not found:
+        if not any(l.strip() == "【用户偏好】" for l in lines):
+            new_lines.append("")
+            new_lines.append("【用户偏好】")
+        new_lines.append(f"{key}：{value}")
+    try:
+        with open(soul_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+        return True
+    except Exception:
+        return False
+
+def collect_prefs(soul_file):
+    """首次运行：逐项询问缺失的用户偏好（称呼/名字/相处方式），答完立即写入灵魂文件"""
+    soul_text = load_soul(soul_file) or ""
+    prefs = parse_soul_prefs(soul_text)
+    questions = {
+        "称呼": "你想让我怎么称呼你？",
+        "名字": "你给自己起的名字（或昵称）是什么？",
+        "相处方式": "你希望我怎么跟你相处？（比如：简洁直接 / 幽默一点 / 啰嗦一点...）",
+    }
+    for key, q in questions.items():
+        if not prefs.get(key):
+            print(f"\n{BOLD}💬 {q}{RESET}")
+            ans = input(f"{GREEN}你: {RESET}").strip()
+            if ans:
+                set_pref(soul_file, key, ans)
+                prefs[key] = ans
+                print(f"{GRAY}✅ 已写入灵魂文件{RESET}")
+    # 重新读取完整灵魂（含新写入的偏好）
+    return load_soul(soul_file) or ""
+
 def save_memory(mem):
     try:
         os.makedirs(AGENT_DIR, exist_ok=True)
@@ -472,6 +538,15 @@ def main():
     enable_vt()
     mem = load_memory()
     soul = load_soul()
+
+    # 灵魂初始化（硬规定）：soul 存在但偏好不全 → 先问用户，答完写入 soul 文件
+    if soul:
+        prefs = parse_soul_prefs(soul)
+        if any(not v for v in prefs.values()):
+            print(f"\n{BOLD}🔧 首次使用：先认识你一下{RESET}")
+            soul = collect_prefs(SOUL_FILE)
+            print(f"{GRAY}💫 灵魂文件已完善，开始干活{RESET}")
+
     mem_text = memory_to_text(mem)
 
     # ---- 时间感知：当前时间 + 上次会话间隔 ----
