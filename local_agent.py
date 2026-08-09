@@ -78,13 +78,14 @@ def enable_vt():
 # ---------- 记忆系统（Hermes 式：存储 + 压缩） ----------
 def load_memory():
     """读取记忆文件；不存在则返回空结构"""
-    default = {"compressed": "", "entries": [], "last_seen": None}
+    default = {"compressed": "", "entries": [], "last_seen": None, "mode": "闲聊"}
     try:
         if os.path.exists(MEMORY_FILE):
             with open(MEMORY_FILE, encoding="utf-8") as f:
                 mem = json.load(f)
             if isinstance(mem, dict):
                 mem.setdefault("last_seen", None)
+                mem.setdefault("mode", "闲聊")   # 工作模式跨会话保持
                 return mem
     except Exception:
         pass
@@ -378,6 +379,43 @@ def trim_to_ratio(messages, mem, keep_ratio):
     rest = rest[-keep:]
     return system + rest
 
+# ---------- CLI Markdown 轻量渲染（流式状态机：粗体/代码块/表格行） ----------
+MD_BOLD = "\033[1m"
+MD_CODE = "\033[36m"    # 代码块：青色
+MD_TABLE = "\033[35m"   # 表格：品红
+md_state = {"code": False}
+
+def render_md(piece, st):
+    """流式 markdown 轻量渲染：```代码块``` / **粗体** / 表格行（| 开头）。
+    跨 chunk 的 ** 或表格边界可能漏处理——CLI 级够用即可"""
+    # 1. 代码块开关
+    if "```" in piece:
+        if not st["code"]:
+            st["code"] = True
+            piece = piece.replace("```", "", 1)
+            return MD_CODE + piece
+        else:
+            st["code"] = False
+            piece = piece.replace("```", "", 1)
+            return RESET + piece
+    if st["code"]:
+        return piece   # 代码块内原样（已上色）
+    # 2. 粗体 **：成对切换
+    if "**" in piece:
+        parts = piece.split("**")
+        out = []
+        for i, p in enumerate(parts):
+            if p:
+                out.append(p)
+            if i < len(parts) - 1:
+                out.append(MD_BOLD if i % 2 == 0 else RESET)
+        piece = "".join(out)
+    # 3. 表格行：行首或换行后 | 开头 → 表格色（代码块外）
+    import re
+    if re.search(r"(^|\n)\|", piece):
+        piece = MD_TABLE + piece + RESET
+    return piece
+
 def read_keys():
     """非阻塞读取按键：'q'=打断输出 / 't'=展开收起思考 / [] = 无按键"""
     if msvcrt is None:
@@ -507,7 +545,7 @@ def call_ollama_stream(messages):
                     print(f"\r{GRAY} 思考完成：{think_len} 字 · {think_secs:.1f}s（T 展开）{RESET}", end="", flush=True)
                 print(f"{RESET}\n", end="", flush=True)
             content_parts.append(piece)
-            print(piece, end="", flush=True)
+            print(render_md(piece, md_state), end="", flush=True)
 
     if tool_calls is not None:
         # 思考完直接调工具（无 content）：\r 覆盖状态行后显示摘要
@@ -551,6 +589,7 @@ def main():
     ctx = {
         "mem": mem,
         "add_memory": add_memory,
+        "save_memory": save_memory,
         "soul_file": SOUL_FILE,
         "set_pref": set_pref,
         "skills_dir": SKILLS_DIR,
@@ -572,10 +611,10 @@ def main():
     save_memory(mem)   # 记录本次运行时间，供下次对比
 
     system_prompt = (
-        "你是一个运行在本地的小型助手，能调用 11 个工具："
+        "你是一个运行在本地的小型助手，能调用 12 个工具："
         "list_files（列目录）、read_file（读文件）、echo_message（打印）、execute_shell（执行cmd命令）、"
         "write_file（写文件）、search_web（联网搜索）、update_pref（更新用户偏好）、remember（记住重要信息）、"
-        "list_skills（列技能）、load_skill（加载技能步骤）、learn_skill（学习保存技能）。\n"
+        "list_skills（列技能）、load_skill（加载技能步骤）、learn_skill（学习保存技能）、set_mode（切换工作模式）。\n"
         "使用原则：\n"
         "1. 日常闲聊、问答、寒暄直接回答，不要调用任何工具，也不要考虑用户是否想用其他工具。\n"
         "2. 只有当任务确实需要时才调用对应工具：查文件用 list_files、执行命令用 execute_shell、"
@@ -588,6 +627,7 @@ def main():
         "5. 遇到不常见或复杂的命令/工具用法不明确时，不要凭猜测执行：先用 execute_shell 执行 '<命令> -help'、'<命令> /?' 或 'help <命令>' 查看帮助，或用 search_web 搜索用法。日常简单命令（dir、ipconfig、type 等）直接用。\n"
         "6. 不要猜测用户想要用哪个工具——任务需要什么就用什么，不需要就不调用。\n"
         "7. 工具结果能直接回答用户时，用简洁中文总结，不重复输出原始内容。\n"
+        f"\n【当前工作模式】{mem.get('mode', '闲聊')}——回答风格：闲聊=轻松简短；工作=严谨高效；写代码=直接给完整代码；查资料=先搜索再回答。用户说'进入xx模式'时用 set_mode 切换。\n"
         f"\n【可用技能】（索引，需要时用 load_skill 加载全文）\n{skills_index}\n"
         f"\n【时间】当前：{time_str}（星期{weekday}）。距离上次会话：{gap_text}。\n"
         f"【历史记忆】（跨会话保留，供参考）\n{mem_text}"
@@ -600,7 +640,7 @@ def main():
     print(f"{BOLD}Local Agent 已启动（{MODEL}）{RESET}")
     print(f"{GRAY} 已读取记忆文件: {MEMORY_FILE}{RESET}")
     print(f"{GRAY} 灵魂文件: {SOUL_FILE}（{'已注入' if soul else '未找到，跳过'}）{RESET}")
-    print(f"{GRAY}   近期记忆 {len(mem.get('entries', []))} 条 | 长期压缩 {'有' if mem.get('compressed') else '无'}{RESET}")
+    print(f"{GRAY}   近期记忆 {len(mem.get('entries', []))} 条 | 长期压缩 {'有' if mem.get('compressed') else '无'} | 模式: {mem.get('mode', '闲聊')}{RESET}")
     print(f"{GRAY}输入 'exit' 退出 | '记住：xxx' 直接存记忆 | 生成时 T=展开/收起思考 Q=打断{RESET}")
 
     while True:

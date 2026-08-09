@@ -8,6 +8,24 @@ update_pref: 更新灵魂文件里的用户偏好（称呼/名字/相处方式�
 from . import register_tool
 
 
+MODES = ["闲聊", "工作", "写代码", "查资料"]
+
+
+@register_tool(
+    "set_mode",
+    "切换工作模式。可选模式：闲聊 / 工作 / 写代码 / 查资料。当用户明确说'进入xx模式'、'切换到xx模式'时调用。模式会跨会话保持。",
+    {"type": "object", "properties": {"mode": {"type": "string"}}},
+)
+def set_mode(args, ctx):
+    mode = (args.get("mode", "") or "").strip()
+    if mode not in MODES:
+        return f"未知模式 '{mode}'，可选：{' / '.join(MODES)}"
+    ctx["mem"]["mode"] = mode
+    if ctx.get("save_memory"):
+        ctx["save_memory"](ctx["mem"])
+    return f"已切换到【{mode}】模式（跨会话保持）"
+
+
 @register_tool(
     "remember",
     "把一条重要信息存入长期记忆（跨会话保留）。用户明确要求记住、或者对话中出现需要长期保存的事实/偏好时调用。content 为要记住的内容。",
