@@ -311,18 +311,21 @@ def trim_history(messages, mem, max_len=MAX_HISTORY):
         rest = rest[-max_len:]
     return system + rest
 
-def check_interrupt():
-    """检测是否按了 Q 键（打断当前输出）。非阻塞，Windows msvcrt 实现"""
+def read_keys():
+    """非阻塞读取按键：'q'=打断输出 / 't'=展开收起思考 / [] = 无按键"""
     if msvcrt is None:
-        return False
+        return []
+    keys = []
     try:
         while msvcrt.kbhit():
             ch = msvcrt.getch()
             if ch in (b'q', b'Q'):
-                return True
+                keys.append('q')
+            elif ch in (b't', b'T'):
+                keys.append('t')
     except Exception:
         pass
-    return False
+    return keys
 
 # ---------- 调用 Ollama（流式 + 灰色思考 + Q 打断） ----------
 def call_ollama_stream(messages):
@@ -338,9 +341,12 @@ def call_ollama_stream(messages):
     resp.raise_for_status()
 
     content_parts = []
+    think_parts = []
     tool_calls = None
-    think_started = False
-    content_started = False
+    think_expanded = False      # 思考默认收起
+    think_status_shown = False  # 收起模式的状态提示是否已显示
+    think_start_ts = time.time()
+    think_ended = False
     for line in resp.iter_lines():
         if not line:
             continue
@@ -348,30 +354,50 @@ def call_ollama_stream(messages):
             data = json.loads(line)
         except json.JSONDecodeError:
             continue
-        msg = data.get("message", {})
-        # 按 Q 打断当前输出
-        if check_interrupt():
+        # 按键：Q 打断 / T 展开收起思考
+        keys = read_keys()
+        if 'q' in keys:
             print(f"\n{RED}⏹ 已打断{RESET}", flush=True)
             resp.close()
             return {"role": "assistant", "content": "".join(content_parts)}, False
+        if 't' in keys:
+            think_expanded = not think_expanded
+            if think_expanded:
+                print(f"{RESET}\n{GRAY}💭 [展开思考]{RESET}\n", end="", flush=True)
+                if think_parts:
+                    print(f"{GRAY}{''.join(think_parts)}{RESET}", end="", flush=True)
+            else:
+                print(f"{RESET}\n{GRAY}💭 [收起思考]{RESET}", end="", flush=True)
+        msg = data.get("message", {})
         if msg.get("tool_calls"):
             tool_calls = msg["tool_calls"]
             break
         think_piece = msg.get("thinking")
         if think_piece:
-            if not think_started:
-                print(f"\n{GRAY}", end="", flush=True)
-                think_started = True
-            print(f"{think_piece}", end="", flush=True)
+            think_parts.append(think_piece)
+            if think_expanded:
+                print(f"{GRAY}{think_piece}{RESET}", end="", flush=True)
+            elif not think_status_shown:
+                print(f"\n{GRAY}💭 思考中...（T 展开 / Q 打断）{RESET}", end="", flush=True)
+                think_status_shown = True
         piece = msg.get("content")
         if piece:
-            if think_started and not content_started:
-                print(f"{RESET}\n", flush=True)   # 思考结束，恢复颜色换行
-                content_started = True
+            if not think_ended:
+                think_ended = True
+                # 思考结束：默认收起 → 显示摘要
+                if think_parts and not think_expanded:
+                    think_len = len("".join(think_parts))
+                    think_secs = time.time() - think_start_ts
+                    print(f"{RESET}\n{GRAY}💭 思考 {think_len} 字 · {think_secs:.1f}s（T 展开）{RESET}", end="", flush=True)
+                print(f"{RESET}\n", end="", flush=True)
             content_parts.append(piece)
             print(piece, end="", flush=True)
 
     if tool_calls is not None:
+        # 思考完直接调工具（无 content）：收起模式显示摘要
+        if think_parts and not think_ended and not think_expanded:
+            think_len = len("".join(think_parts))
+            print(f"{RESET}\n{GRAY}💭 思考 {think_len} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
         print(f"{RESET}", flush=True)
         return {"role": "assistant", "content": "", "tool_calls": tool_calls}, True
     print(f"{RESET}", flush=True)
@@ -451,7 +477,7 @@ def main():
     print(f"{GRAY}📖 已读取记忆文件: {MEMORY_FILE}{RESET}")
     print(f"{GRAY}💫 灵魂文件: {SOUL_FILE}（{'已注入' if soul else '未找到，跳过'}）{RESET}")
     print(f"{GRAY}   近期记忆 {len(mem.get('entries', []))} 条 | 长期压缩 {'有' if mem.get('compressed') else '无'}{RESET}")
-    print(f"{GRAY}输入 'exit' 退出 | 输入 '记住：xxx' 直接存记忆{RESET}")
+    print(f"{GRAY}输入 'exit' 退出 | '记住：xxx' 直接存记忆 | 生成时 T=展开/收起思考 Q=打断{RESET}")
 
     while True:
         # 记忆超量时在空闲时压缩（不在工具调用链里做，防嵌套模型调用卡死）
