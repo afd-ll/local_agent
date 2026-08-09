@@ -39,7 +39,7 @@ TOOLS_SCHEMA = build_tools_schema()
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "qwen3:4b"
-MAX_TURNS = 5        # 单轮对话中工具调用的最大轮数，防死循环
+MAX_TURNS = 20       # 单轮对话中工具调用的最大轮数（写代码/分段写文件场景需要多次调用）
 MAX_HISTORY = 16     # 滑动窗口：条数兜底（16 条，含工具结果易超窗）
 NUM_CTX = 16384      # 上下文窗口（token）
 CTX_TRIM_RATIO = 0.50   # 上下文用到 50% 时触发记忆沉淀
@@ -615,7 +615,7 @@ def main():
                 print(f"{GRAY} 本轮耗时 {gen_elapsed:.1f}s{RESET}")
                 break
         else:
-            print(f"\n{RED} 工具调用轮数超限，已终止本轮。{RESET}")
+            print(f"\n{RED} 工具调用已达 {MAX_TURNS} 次上限，本轮终止。任务没完成的话，再发一条消息我接着干。{RESET}")
 
         # 上下文管理：token 百分比触发沉淀（50% → 20%），条数机制兜底
         if last_prompt_tokens and last_prompt_tokens > NUM_CTX * CTX_TRIM_RATIO:
