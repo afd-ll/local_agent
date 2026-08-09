@@ -486,8 +486,8 @@ def main():
     save_memory(mem)   # 记录本次运行时间，供下次对比
 
     system_prompt = (
-        "你是一个运行在本地的小型助手，能调用 10 个工具："
-        "list_files（列目录）、echo_message（打印）、execute_shell（执行cmd命令）、"
+        "你是一个运行在本地的小型助手，能调用 11 个工具："
+        "list_files（列目录）、read_file（读文件）、echo_message（打印）、execute_shell（执行cmd命令）、"
         "write_file（写文件）、search_web（联网搜索）、update_pref（更新用户偏好）、remember（记住重要信息）、"
         "list_skills（列技能）、load_skill（加载技能步骤）、learn_skill（学习保存技能）。\n"
         "使用原则：\n"
