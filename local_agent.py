@@ -405,8 +405,10 @@ def call_ollama_stream(messages):
     }
     if "qwen3" in MODEL:
         payload["think"] = True   # qwen3 专属：思考模式；qwen2.5 等模型传了会 400
-    # timeout=(连接, 读)：读超时 600s——写代码/长输出任务首 token 前可能空闲很久，120s 会打断
-    resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(10, 600))
+    # timeout=(连接, 读)：读超时 300s 无数据才报错。
+    # 注意：模型生成长工具参数（如 write_file 几百字代码）期间无 thinking/content 推送，
+    # 看起来静默但实际在干活——超时太短会误杀；300s 平衡防真卡死与防误杀
+    resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(10, 300))
     resp.raise_for_status()
 
     content_parts = []
@@ -588,6 +590,9 @@ def main():
                 msg, is_tool, prompt_tokens = call_ollama_stream(messages)
                 if prompt_tokens:
                     last_prompt_tokens = prompt_tokens
+            except requests.exceptions.ReadTimeout:
+                print(f"\n{RED} 模型 5 分钟没有新输出（可能在生成很长的工具参数，也可能卡住了）。按 Q 打断，或再发一条消息继续。{RESET}")
+                break
             except Exception as e:
                 print(f"\n{RED}错误: {e}{RESET}")
                 break
