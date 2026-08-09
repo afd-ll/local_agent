@@ -48,6 +48,7 @@ AGENT_DIR = os.path.join(os.path.expanduser("~"), ".agent")   # 数据目录：�
 MAX_MEMORY_ENTRIES = 20   # 记忆条目上限，超过触发压缩
 MEMORY_FILE = os.path.join(AGENT_DIR, "agent_memory.json")   # 记忆文件
 SOUL_FILE = os.path.join(AGENT_DIR, "soul.md")   # 灵魂文件（身份设定，启动时注入 system）
+WORK_FILE = os.path.join(AGENT_DIR, "work.md")    # 工作要求文件（用户的工作期望，启动时注入 system）
 SKILLS_DIR = os.path.join(AGENT_DIR, "skills")    # 技能目录（用户学习的技能，跨会话保留）
 BUILTIN_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")  # 内置技能（仓库自带范本，只读）
 
@@ -145,6 +146,17 @@ def build_skills_index(builtin_dir, user_dir):
                 except Exception:
                     continue
     return "\n".join(lines) if lines else "（无）"
+
+def load_work(path=None):
+    """读取工作要求文件（工作期望与职责）；不存在返回 None"""
+    path = path or WORK_FILE
+    try:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return None
 
 def load_soul(path=None):
     """读取灵魂文件（身份设定）；不存在返回 None"""
@@ -569,6 +581,7 @@ def main():
     enable_vt()
     mem = load_memory()
     soul = load_soul()
+    work_req = load_work()
 
     # 灵魂初始化（硬规定）：
     #  - 无 soul 文件 → 引导用户创建并收集偏好
@@ -636,10 +649,13 @@ def main():
         soul_section = build_soul_section(soul)
         if soul_section:
             system_prompt = soul_section + "\n\n" + system_prompt   # 灵魂（身份）放最前，优先级最高
+    if work_req:
+        system_prompt = "【工作要求与职责】（硬性规定，必须遵守）\n" + work_req + "\n\n" + system_prompt
     messages = [{"role": "system", "content": system_prompt}]
     print(f"{BOLD}Local Agent 已启动（{MODEL}）{RESET}")
     print(f"{GRAY} 已读取记忆文件: {MEMORY_FILE}{RESET}")
     print(f"{GRAY} 灵魂文件: {SOUL_FILE}（{'已注入' if soul else '未找到，跳过'}）{RESET}")
+    print(f"{GRAY} 工作要求: {WORK_FILE}（{'已注入' if work_req else '未配置，可复制 work.example.md 创建'}）{RESET}")
     print(f"{GRAY}   近期记忆 {len(mem.get('entries', []))} 条 | 长期压缩 {'有' if mem.get('compressed') else '无'} | 模式: {mem.get('mode', '闲聊')}{RESET}")
     print(f"{GRAY}输入 'exit' 退出 | '记住：xxx' 直接存记忆 | 生成时 T=展开/收起思考 Q=打断{RESET}")
 
