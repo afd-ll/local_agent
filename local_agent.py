@@ -291,19 +291,22 @@ def condense_dialog(text):
         return None
 
 def trim_history(messages, mem, max_len=MAX_HISTORY):
-    """裁剪前先把要丢的对话沉淀进记忆（压缩而非丢失）"""
+    """裁剪前先把要丢的对话沉淀进记忆（压缩而非丢失）。
+    留余量 + 小裁剪不沉淀：避免触发一次后每轮都触发"""
     system = [m for m in messages if m["role"] == "system"]
     rest = [m for m in messages if m["role"] != "system"]
+    keep = max_len - 4   # 留余量：一次裁到 max_len-4，2-3 轮才触发一次裁剪
     if len(rest) > max_len:
-        drop = rest[:len(rest) - max_len]   # 即将被裁剪的早期消息
-        # 只沉淀有意义的对话（跳过纯工具调用/结果）
+        drop = rest[:len(rest) - keep]
+        # 只取被裁对话的后 8 条（限制压缩输入，加快速度）
         dialog = []
-        for m in drop:
+        for m in drop[-8:]:
             role = m["role"]
             content = str(m.get("content", ""))[:300]
             if role in ("user", "assistant") and content and not m.get("tool_calls"):
                 dialog.append(f"{'用户' if role == 'user' else '助手'}: {content}")
-        if dialog:
+        # 少于 3 条有意义的对话不值得调模型压缩，直接丢
+        if len(dialog) >= 3:
             # 先提示再干活——沉淀要调本地模型压缩，几秒到十几秒，不提示会以为卡了
             print(f"{GRAY}🔄 记忆沉淀：压缩早期对话中...{RESET}", end="", flush=True)
             summary = condense_dialog("\n".join(dialog))
@@ -312,7 +315,7 @@ def trim_history(messages, mem, max_len=MAX_HISTORY):
                 print(f" ✅ 已存入记忆（{len(summary)} 字）{RESET}")
             else:
                 print(f"（无值得沉淀的内容）{RESET}")
-        rest = rest[-max_len:]
+        rest = rest[-keep:]
     return system + rest
 
 def read_keys():
