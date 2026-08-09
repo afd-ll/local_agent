@@ -6,6 +6,7 @@ execute_shell: 执行 cmd 命令（危险命令拦截）
 write_file: 写文件（系统目录保护）
 """
 import os
+import re
 import subprocess
 
 from . import register_tool
@@ -17,11 +18,14 @@ DANGEROUS = ["rm -rf", "del /f", "del /q", "format", "shutdown", "rd /s", "rmdir
 
 @register_tool(
     "list_files",
-    "列出指定目录下的所有文件和文件夹。directory 必须是完整路径（如 D:\\\\ 或 D:\\\\work），不要省略反斜杠。返回完整列表。",
+    "列出指定目录下的所有文件和文件夹。directory 必须是完整路径（如 D:\\\\ 或 D:\\\\work）。重要：根目录要写 D:\\\\（带反斜杠），只写 D: 会被 Windows 当成当前目录列错地方。返回完整列表。",
     {"type": "object", "properties": {"directory": {"type": "string", "default": "."}}},
 )
 def list_files(args, ctx):
     directory = args.get("directory", ".")
+    # 防御：模型常传 "D:"（漏反斜杠）→ cmd 会把它当"当前目录"而非根目录，这里自动补全
+    if re.match(r"^[a-zA-Z]:$", directory):
+        directory += "\\"
     try:
         # /b 只输出名称（避免卷标/统计信息干扰），/a 含隐藏文件；显式 gbk 编码 + 容错
         result = subprocess.run(["cmd", "/c", "dir", "/b", "/a", directory],
@@ -39,7 +43,7 @@ def list_files(args, ctx):
 
 @register_tool(
     "execute_shell",
-    "在 Windows 上执行一条 cmd 命令并返回输出。command 参数必须是完整的 cmd 命令字符串。危险操作（删除、格式化、关机）会被拦截。",
+    "在 Windows 上执行一条 cmd 命令并返回输出。command 必须是完整的 cmd 命令字符串。注意：命令里的目录路径要写全（如 dir D:\\\\ 而不是 dir D:，dir D: 会列当前目录）。危险操作（删除、格式化、关机）会被拦截。",
     {"type": "object", "properties": {"command": {"type": "string"}}},
 )
 def execute_shell(args, ctx):
