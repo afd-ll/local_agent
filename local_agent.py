@@ -45,6 +45,7 @@ AGENT_DIR = os.path.join(os.path.expanduser("~"), ".agent")   # 数据目录：�
 MAX_MEMORY_ENTRIES = 20   # 记忆条目上限，超过触发压缩
 MEMORY_FILE = os.path.join(AGENT_DIR, "agent_memory.json")   # 记忆文件
 SOUL_FILE = os.path.join(AGENT_DIR, "soul.md")   # 灵魂文件（身份设定，启动时注入 system）
+SKILLS_DIR = os.path.join(AGENT_DIR, "skills")    # 技能目录（每个技能一个 .md，按需加载/学习保存）
 
 # Tavily 搜索 API key：优先读环境变量 TAVILY_API_KEY，没有就用这里填的
 # 注册获取（免费额度 1000 次/月）：https://tavily.com
@@ -117,6 +118,22 @@ def build_soul_section(soul_text):
         lines.append(f"- 相处方式：{prefs['相处方式']}")
     block = "【用户偏好】（硬规定）\n" + "\n".join(lines)
     return (main_part.rstrip() + "\n\n" + block).strip()
+
+def build_skills_index(skills_dir):
+    """扫描技能目录，生成 name+description 索引（常驻 system，内容按需加载）"""
+    if not os.path.isdir(skills_dir):
+        return "（无）"
+    from tools.skills_tools import parse_skill
+    lines = []
+    for f in sorted(os.listdir(skills_dir)):
+        if f.endswith(".md"):
+            try:
+                with open(os.path.join(skills_dir, f), encoding="utf-8") as fh:
+                    name, desc, _ = parse_skill(fh.read())
+                lines.append(f"- {name or f[:-3]}：{desc or '无描述'}")
+            except Exception:
+                continue
+    return "\n".join(lines) if lines else "（无）"
 
 def load_soul(path=None):
     """读取灵魂文件（身份设定）；不存在返回 None"""
@@ -451,7 +468,10 @@ def main():
         "add_memory": add_memory,
         "soul_file": SOUL_FILE,
         "set_pref": set_pref,
+        "skills_dir": SKILLS_DIR,
     }
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    skills_index = build_skills_index(SKILLS_DIR)
 
     mem_text = memory_to_text(mem)
 
@@ -466,19 +486,23 @@ def main():
     save_memory(mem)   # 记录本次运行时间，供下次对比
 
     system_prompt = (
-        "你是一个运行在本地的小型助手，能调用 7 个工具："
+        "你是一个运行在本地的小型助手，能调用 10 个工具："
         "list_files（列目录）、echo_message（打印）、execute_shell（执行cmd命令）、"
-        "write_file（写文件）、search_web（联网搜索）、update_pref（更新用户偏好）、remember（记住重要信息）。\n"
+        "write_file（写文件）、search_web（联网搜索）、update_pref（更新用户偏好）、remember（记住重要信息）、"
+        "list_skills（列技能）、load_skill（加载技能步骤）、learn_skill（学习保存技能）。\n"
         "使用原则：\n"
         "1. 日常闲聊、问答、寒暄直接回答，不要调用任何工具，也不要考虑用户是否想用其他工具。\n"
         "2. 只有当任务确实需要时才调用对应工具：查文件用 list_files、执行命令用 execute_shell、"
         "写文件用 write_file、查最新资料用 search_web、用户要求记住时用 remember、"
         "用户明确要求改变称呼/名字/相处方式时用 update_pref。\n"
-        "3. 复杂任务可以自动规划多步工具链：一次调一个工具，等结果返回后自己判断下一步。\n"
+        "3. 技能机制：遇到任务先看【可用技能】索引，匹配就用 load_skill 加载步骤执行；"
+        "用户教了新方法/完成可复用流程/用户说'记住这个方法'时，用 learn_skill 总结保存。\n"
+        "4. 复杂任务可以自动规划多步工具链：一次调一个工具，等结果返回后自己判断下一步。\n"
         "   例如用户说'帮我记住我的设备信息'：先用 execute_shell 查询系统信息，再用 remember 记住结果。\n"
-        "4. 遇到不常见或复杂的命令/工具用法不明确时，不要凭猜测执行：先用 execute_shell 执行 '<命令> -help'、'<命令> /?' 或 'help <命令>' 查看帮助，或用 search_web 搜索用法。日常简单命令（dir、ipconfig、type 等）直接用。\n"
-        "5. 不要猜测用户想要用哪个工具——任务需要什么就用什么，不需要就不调用。\n"
-        "6. 工具结果能直接回答用户时，用简洁中文总结，不重复输出原始内容。\n"
+        "5. 遇到不常见或复杂的命令/工具用法不明确时，不要凭猜测执行：先用 execute_shell 执行 '<命令> -help'、'<命令> /?' 或 'help <命令>' 查看帮助，或用 search_web 搜索用法。日常简单命令（dir、ipconfig、type 等）直接用。\n"
+        "6. 不要猜测用户想要用哪个工具——任务需要什么就用什么，不需要就不调用。\n"
+        "7. 工具结果能直接回答用户时，用简洁中文总结，不重复输出原始内容。\n"
+        f"\n【可用技能】（索引，需要时用 load_skill 加载全文）\n{skills_index}\n"
         f"\n【时间】当前：{time_str}（星期{weekday}）。距离上次会话：{gap_text}。\n"
         f"【历史记忆】（跨会话保留，供参考）\n{mem_text}"
     )
