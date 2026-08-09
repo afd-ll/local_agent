@@ -31,6 +31,12 @@ try:
 except ImportError:
     msvcrt = None
 
+from tools import load_all_tools, build_tools_schema, TOOL_REGISTRY
+
+# 模块加载时自动扫描 tools/ 目录，注册所有工具
+load_all_tools()
+TOOLS_SCHEMA = build_tools_schema()
+
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "qwen3:4b"
 MAX_TURNS = 5        # 单轮对话中工具调用的最大轮数，防死循环
@@ -229,215 +235,19 @@ def compress_memory(mem):
         print(f"{RED}⚠️ 记忆压缩失败: {e}{RESET}")
 
 # ---------- 工具定义 ----------
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "list_files",
-            "description": "列出指定目录下的文件和文件夹（Windows dir 命令）。directory 参数为要列出的目录路径，省略则默认当前目录。",
-            "parameters": {"type": "object", "properties": {"directory": {"type": "string", "default": "."}}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "echo_message",
-            "description": "在命令行中打印一条消息，用于测试和确认。",
-            "parameters": {"type": "object", "properties": {"message": {"type": "string"}}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_shell",
-            "description": "在 Windows 上执行一条 cmd 命令并返回输出。command 参数必须是完整的 cmd 命令字符串。危险操作（删除、格式化、关机）会被拦截。",
-            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "把文本内容写入指定文件（UTF-8 编码，自动创建目录）。path 为完整路径，content 为要写入的内容。系统目录禁止写入。",
-            "parameters": {"type": "object", "properties": {
-                "path": {"type": "string"}, "content": {"type": "string"}}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_web",
-            "description": "联网搜索（百度/必应）。query 为搜索关键词，返回前 5 条结果标题和摘要。",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_pref",
-            "description": "更新灵魂文件里的用户偏好（称呼/名字/相处方式）。当用户明确要求改变对你的称呼、给你起新名字或调整相处方式时调用。key 取 '称呼'/'名字'/'相处方式'，value 为新内容。",
-            "parameters": {"type": "object", "properties": {
-                "key": {"type": "string", "enum": ["称呼", "名字", "相处方式"]},
-                "value": {"type": "string"}}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "remember",
-            "description": "把一条重要信息存入长期记忆（跨会话保留）。用户明确要求记住、或者对话中出现需要长期保存的事实/偏好时调用。content 为要记住的内容。",
-            "parameters": {"type": "object", "properties": {"content": {"type": "string"}}}
-        }
-    }
-]
-
-# ---------- 工具函数实现 ----------
-def list_files(directory="."):
-    try:
-        result = subprocess.run(["cmd", "/c", "dir", directory], capture_output=True, text=True, timeout=10)
-        return result.stdout
-    except Exception as e:
-        return f"执行出错: {e}"
-
-def echo_message(message):
-    return f"已执行: echo {message}"
-
-def execute_shell(command):
-    dangerous = ["rm -rf", "del /f", "del /q", "format", "shutdown", "rd /s", "rmdir /s",
-                 "diskpart", "reg delete", "taskkill /f /im", "cipher /w", "vssadmin delete"]
-    for kw in dangerous:
-        if kw in command.lower():
-            return f"❌ 禁止执行含有 '{kw}' 的命令。"
-    try:
-        result = subprocess.run(["cmd", "/c", command], capture_output=True, text=True, encoding='gbk', errors='replace', timeout=30)
-        if result.returncode == 0:
-            return f"✅ 执行成功:\n{result.stdout}"
-        else:
-            return f"❌ 执行失败:\n{result.stderr}"
-    except subprocess.TimeoutExpired:
-        return "⏰ 超时"
-    except Exception as e:
-        return f"💥 {e}"
-
-def write_file(path, content):
-    """文件写入（UTF-8），系统目录保护（动态识别用户目录）"""
-    low = path.lower()
-    user_dir = os.environ.get("USERPROFILE", "").lower() or os.environ.get("HOME", "").lower()
-    blocked = ["c:\\windows", "c:\\program files", "c:\\$recycle", "system32",
-               "c:\\boot", "c:\\programdata"]
-    if user_dir:
-        blocked.append(os.path.join(user_dir, "appdata"))
-        blocked.append(os.path.join(user_dir, "desktop"))   # 桌面也保护，防乱写
-    for b in blocked:
-        if b and low.startswith(b):
-            return f"❌ 禁止写入系统目录: {b}"
-    try:
-        parent = os.path.dirname(path)
-        if parent and not os.path.exists(parent):
-            os.makedirs(parent, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"✅ 已写入 {path}（{len(content)} 字符）"
-    except Exception as e:
-        return f"💥 {e}"
-
-def _strip_html(s):
-    return html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
-
-def search_tavily(query):
-    """Tavily 搜索（外部 API，结果质量高）：https://api.tavily.com/search"""
-    if not TAVILY_API_KEY:
-        return None   # 无 key，交给 fallback
-    try:
-        resp = requests.post("https://api.tavily.com/search", json={
-            "api_key": TAVILY_API_KEY,
-            "query": query,
-            "max_results": 5,
-            "search_depth": "basic",
-            "include_answer": True      # 让 Tavily 生成短答案，直接可用
-        }, timeout=20)
-        data = resp.json()
-        results = data.get("results", [])
-        if not results:
-            return None
-        out = []
-        answer = data.get("answer")
-        if answer:
-            out.append(f"💡 摘要：{answer[:300]}")
-        for i, r in enumerate(results[:5]):
-            out.append(f"{i+1}. {r.get('title', '')}\n   {r.get('url', '')}\n   {(r.get('content', '') or '')[:150]}")
-        return "搜索结果：\n" + "\n".join(out)
-    except Exception as e:
-        return None
-
-def search_web(query):
-    """联网搜索：Tavily（外部API）优先 → 百度移动 → DuckDuckGo"""
-    r = search_tavily(query)
-    if r:
-        return r
-    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"}
-    results = []
-    # 1) 百度移动版（国内可用，玄枢爬虫验证过）
-    try:
-        url = "https://m.baidu.com/s?word=" + quote(query)
-        r = requests.get(url, headers=headers, timeout=15)
-        r.encoding = "utf-8"
-        titles = re.findall(r"<h3[^>]*>(.*?)</h3>", r.text, re.S)
-        abstracts = re.findall(r'class="c-abstract[^"]*"[^>]*>(.*?)</div>', r.text, re.S)
-        for i, t in enumerate(titles[:5]):
-            results.append(f"{i+1}. {_strip_html(t)}")
-            if i < len(abstracts):
-                results.append(f"   {_strip_html(abstracts[i])[:120]}")
-    except Exception:
-        pass
-    # 2) DuckDuckGo Lite 备用（海外网络可用）
-    if not results:
-        try:
-            url = "https://lite.duckduckgo.com/lite/?q=" + quote(query)
-            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-            r.encoding = "utf-8"
-            links = re.findall(r'<a rel="nofollow"[^>]*>(.*?)</a>', r.text, re.S)
-            snippets = re.findall(r'class="result-snippet">(.*?)</td>', r.text, re.S)
-            for i, t in enumerate(links[:5]):
-                results.append(f"{i+1}. {_strip_html(t)}")
-                if i < len(snippets):
-                    results.append(f"   {_strip_html(snippets[i])[:120]}")
-        except Exception:
-            pass
-    if results:
-        return "搜索结果：\n" + "\n".join(results)
-    return "❌ 搜索无结果或网络失败"
-
-def remember(mem, content):
-    """记住一条重要信息（跨会话保存到记忆文件）"""
-    return add_memory(mem, content)
-
-def update_pref(key, value):
-    """更新灵魂文件里的用户偏好（对话中实时生效）"""
-    if key not in ("称呼", "名字", "相处方式"):
-        return f"❌ 不支持的偏好字段: {key}（只能改 称呼/名字/相处方式）"
-    if set_pref(SOUL_FILE, key, value):
-        return f"✅ 已更新灵魂偏好 {key} = {value}，下次启动生效"
-    return "❌ 写入灵魂文件失败"
-
-# ---------- 工具分发 ----------
-def run_tool(name, args, mem):
-    if name == "list_files":
-        return list_files(args.get("directory", "."))
-    elif name == "echo_message":
-        return echo_message(args.get("message", ""))
-    elif name == "execute_shell":
-        return execute_shell(args.get("command", ""))
-    elif name == "write_file":
-        return write_file(args.get("path", ""), args.get("content", ""))
-    elif name == "search_web":
-        return search_web(args.get("query", ""))
-    elif name == "update_pref":
-        return update_pref(args.get("key", ""), args.get("value", ""))
-    elif name == "remember":
-        return remember(mem, args.get("content", ""))
-    else:
+# ---------- 工具定义：由 tools/ 目录自动加载（TOOLS_SCHEMA） ----------
+# ---------- 工具分发（注册表） ----------
+def run_tool(name, args, ctx):
+    """从注册表取工具执行；崩溃不退出，错误汇报给 AI 决策"""
+    info = TOOL_REGISTRY.get(name)
+    if not info:
         return f"未知工具: {name}"
+    try:
+        return info["handler"](args, ctx)
+    except Exception as e:
+        err_msg = f"{type(e).__name__}: {e}"[:200]
+        return (f"❌ 工具 {name} 执行出错: {err_msg}。"
+                "请根据这个错误决定：尝试其他方法，或告知用户无法完成。")
 
 # ---------- 上下文裁剪（先沉淀，后裁剪） ----------
 def condense_dialog(text):
@@ -499,7 +309,7 @@ def call_ollama_stream(messages):
     payload = {
         "model": MODEL,
         "messages": messages,
-        "tools": tools,
+        "tools": TOOLS_SCHEMA,
         "stream": True,
         "think": True,           # qwen3 保留思考模式
         "options": {"num_ctx": 16384}
@@ -574,6 +384,14 @@ def main():
         print(f"\n{BOLD}🔧 首次使用：先认识你一下{RESET}")
         soul = collect_prefs(SOUL_FILE)
         print(f"{GRAY}💫 灵魂文件已完善，开始干活{RESET}")
+
+    # 工具上下文：注入给所有工具的共享状态
+    ctx = {
+        "mem": mem,
+        "add_memory": add_memory,
+        "soul_file": SOUL_FILE,
+        "set_pref": set_pref,
+    }
 
     mem_text = memory_to_text(mem)
 
@@ -652,13 +470,7 @@ def main():
                         except json.JSONDecodeError:
                             args = {}
                     t_tool = time.time()
-                    try:
-                        result = run_tool(func_name, args, mem)
-                    except Exception as e:
-                        # 工具崩溃不退出程序：错误截断后作为结果汇报给 AI，让它决策换方法或告知用户
-                        err_msg = f"{type(e).__name__}: {e}"[:200]
-                        result = (f"❌ 工具 {func_name} 执行出错: {err_msg}。"
-                                  "请根据这个错误决定：尝试其他方法，或告知用户无法完成。")
+                    result = run_tool(func_name, args, ctx)
                     elapsed = time.time() - t_tool
                     print(f"{GREEN}[调用工具] {func_name}({json.dumps(args, ensure_ascii=False)}) ({elapsed:.1f}s){RESET}")
                     messages.append({"role": "tool", "content": result})

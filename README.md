@@ -69,6 +69,41 @@ python my_agent.py
 - **压缩不丢弃**：上下文裁剪前先提炼进记忆，早期信息以"记忆形态"存活
 - **按需加载**：灵魂核心常驻、完整人格按需读文件、工具按需调用
 - **不猜用户**：闲聊就是闲聊，需要工具时自然调用
+## 添加自定义工具（插件化）
+
+工具全部在 `tools/` 目录，每个工具一个文件，自动加载。**添加新工具不用改主程序**：
+
+### 三步添加
+
+1. 在 `tools/` 下新建一个 `.py` 文件（比如 `my_tool.py`）
+2. 用 `@register_tool` 注册：
+
+```python
+# tools/my_tool.py
+from . import register_tool
+
+@register_tool(
+    "my_tool",
+    "一句话说明这个工具干什么（模型靠它判断何时调用）",
+    {"type": "object", "properties": {"参数名": {"type": "string"}}},
+)
+def my_tool(args, ctx):
+    # args: 模型传的参数（dict）
+    # ctx:  共享上下文（mem 记忆对象 / add_memory / soul_file / set_pref）
+    return "工具结果（字符串，会回传给模型）"
+```
+
+3. 重启 agent —— 工具自动出现在列表里
+
+### 内置工具（可作为模板）
+
+| 文件 | 工具 |
+|---|---|
+| `tools/echo_tool.py` | echo_message（最小示例，照抄这个） |
+| `tools/file_ops.py` | list_files / execute_shell / write_file |
+| `tools/web_search.py` | search_web（Tavily→百度→DDG） |
+| `tools/memory_tools.py` | remember / update_pref（依赖 ctx） |
+
 ## 性能调优
 
 上下文与显存/内存的关系：
