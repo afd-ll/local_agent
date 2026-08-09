@@ -396,6 +396,8 @@ def read_keys():
 
 # ---------- 调用 Ollama（流式 + 灰色思考 + Q 打断） ----------
 def call_ollama_stream(messages):
+    """流式调用 Ollama。后台线程读流 + 队列轮询——
+    队列空档（模型静默）时显示"中转词"判定阶段：思考中/生成工具调用中，不用靠猜超时"""
     payload = {
         "model": MODEL,
         "messages": messages,
@@ -405,30 +407,44 @@ def call_ollama_stream(messages):
     }
     if "qwen3" in MODEL:
         payload["think"] = True   # qwen3 专属：思考模式；qwen2.5 等模型传了会 400
-    # timeout=(连接, 读)：读超时 300s 无数据才报错。
-    # 注意：模型生成长工具参数（如 write_file 几百字代码）期间无 thinking/content 推送，
-    # 看起来静默但实际在干活——超时太短会误杀；300s 平衡防真卡死与防误杀
-    resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(10, 300))
+    # 读超时 600s 纯兜底（中转词已保证阶段可见，超时只防真死锁）
+    resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(10, 600))
     resp.raise_for_status()
+
+    import queue as _queue
+    import threading
+
+    q = _queue.Queue()
+
+    def _reader():
+        """后台线程：逐行读流，块放入队列"""
+        try:
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                q.put(data)
+        except Exception as e:
+            q.put({"__error__": str(e)})
+        finally:
+            q.put({"__done__": True})
+
+    threading.Thread(target=_reader, daemon=True).start()
 
     content_parts = []
     think_parts = []
     tool_calls = None
     prompt_tokens = 0
     think_expanded = False      # 思考默认收起
-    think_status_shown = False  # 收起模式的状态提示是否已显示
-    think_start_ts = time.time()
     think_ended = False
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("prompt_eval_count"):
-            prompt_tokens = data["prompt_eval_count"]   # 本次请求的输入 token 量（用于百分比沉淀）
-        # 按键：Q 打断 / T 展开收起思考
+    think_start_ts = time.time()
+    last_activity = time.time()   # 最后一次收到数据的时间
+
+    while True:
+        # 按键：Q 打断 / T 展开收起思考（每轮循环都检查，静默期也能响应）
         keys = read_keys()
         if 'q' in keys:
             print(f"\r{RED} 已打断{RESET}   ", flush=True)
@@ -437,11 +453,36 @@ def call_ollama_stream(messages):
         if 't' in keys:
             think_expanded = not think_expanded
             if think_expanded:
-                print(f"{RESET}\n{GRAY} [展开思考]{RESET}\n", end="", flush=True)
-                if think_parts:
+                total = len("".join(think_parts))
+                if total > 500:
+                    # 防刷屏：只显示末尾 300 字，后续增量实时追加
+                    print(f"\r{RESET}\n{GRAY} [展开思考 · 共 {total} 字 · 显示末尾]{RESET}\n", end="", flush=True)
+                    print(f"{GRAY}{''.join(think_parts)[-300:]}{RESET}", end="", flush=True)
+                else:
+                    print(f"\r{RESET}\n{GRAY} [展开思考]{RESET}\n", end="", flush=True)
                     print(f"{GRAY}{''.join(think_parts)}{RESET}", end="", flush=True)
             else:
                 print(f"{RESET}\n{GRAY} [收起思考]{RESET}", end="", flush=True)
+
+        # 取块：0.2s 超时——空档期显示中转词
+        try:
+            data = q.get(timeout=0.2)
+            last_activity = time.time()
+        except _queue.Empty:
+            idle = time.time() - last_activity
+            # 中转词：有思考但没出正文/工具调用 + 静默 2s → 正在生成工具调用（参数很长，静默正常）
+            if think_parts and not tool_calls and not content_parts and idle > 2:
+                print(f"\r{GRAY} 正在生成工具调用...（已 {idle:.0f}s / Q 打断）{RESET}", end="", flush=True)
+            continue
+
+        if data.get("__done__"):
+            break
+        if data.get("__error__"):
+            print(f"\n{RED} 流错误: {data['__error__']}{RESET}")
+            break
+        if data.get("prompt_eval_count"):
+            prompt_tokens = data["prompt_eval_count"]   # 输入 token 量（百分比沉淀用）
+
         msg = data.get("message", {})
         if msg.get("tool_calls"):
             tool_calls = msg["tool_calls"]
@@ -455,12 +496,11 @@ def call_ollama_stream(messages):
                 # 收起模式：同一行动态刷新字数——长思考时证明它在干活，不是卡死
                 think_len_now = len("".join(think_parts))
                 print(f"\r{GRAY} 思考中... {think_len_now} 字（T 展开 / Q 打断）{RESET}", end="", flush=True)
-                think_status_shown = True
         piece = msg.get("content")
         if piece:
             if not think_ended:
                 think_ended = True
-                # 思考结束：\r 先覆盖掉"思考中...N字"状态行，再显示摘要
+                # 思考结束：\r 覆盖"思考中...N字"状态行，显示摘要
                 if think_parts and not think_expanded:
                     think_len = len("".join(think_parts))
                     think_secs = time.time() - think_start_ts
