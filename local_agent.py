@@ -238,12 +238,15 @@ def compress_memory(mem):
         "保留用户偏好、重要事实、常用配置，删除过时细节。只输出压缩结果：\n" + text
     )
     try:
-        resp = requests.post(OLLAMA_URL, json={
+        req = {
             "model": MODEL, "messages": [
                 {"role": "user", "content": prompt}
-            ], "stream": False, "think": False,
+            ], "stream": False,
             "options": {"num_ctx": 4096}   # 压缩任务小上下文，不与主对话抢显存
-        }, timeout=120)
+        }
+        if "qwen3" in MODEL:
+            req["think"] = False
+        resp = requests.post(OLLAMA_URL, json=req, timeout=120)
         summary = resp.json()["message"]["content"].strip()
         if summary:
             old_sum = mem.get("compressed", "")
@@ -278,12 +281,15 @@ def condense_dialog(text):
         "最多 5 条，每条一句话，忽略寒暄。只输出要点列表：\n" + text
     )
     try:
-        resp = requests.post(OLLAMA_URL, json={
+        req = {
             "model": MODEL,
             "messages": [{"role": "user", "content": prompt}],
-            "stream": False, "think": False,
+            "stream": False,
             "options": {"num_ctx": 4096}   # 沉淀任务小上下文，不与主对话抢显存
-        }, timeout=120)
+        }
+        if "qwen3" in MODEL:
+            req["think"] = False
+        resp = requests.post(OLLAMA_URL, json=req, timeout=120)
         summary = resp.json()["message"]["content"].strip()
         return summary if summary else None
     except Exception as e:
@@ -341,9 +347,10 @@ def call_ollama_stream(messages):
         "messages": messages,
         "tools": TOOLS_SCHEMA,
         "stream": True,
-        "think": True,           # qwen3 保留思考模式
         "options": {"num_ctx": 16384}
     }
+    if "qwen3" in MODEL:
+        payload["think"] = True   # qwen3 专属：思考模式；qwen2.5 等模型传了会 400
     resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=120)
     resp.raise_for_status()
 
