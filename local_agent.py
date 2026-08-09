@@ -304,10 +304,14 @@ def trim_history(messages, mem, max_len=MAX_HISTORY):
             if role in ("user", "assistant") and content and not m.get("tool_calls"):
                 dialog.append(f"{'用户' if role == 'user' else '助手'}: {content}")
         if dialog:
+            # 先提示再干活——沉淀要调本地模型压缩，几秒到十几秒，不提示会以为卡了
+            print(f"{GRAY}🔄 记忆沉淀：压缩早期对话中...{RESET}", end="", flush=True)
             summary = condense_dialog("\n".join(dialog))
             if summary:
                 add_memory(mem, f"[对话沉淀] {summary}")
-                print(f"{GRAY}[记忆沉淀] 早期对话已压缩存入记忆{RESET}")
+                print(f" ✅ 已存入记忆（{len(summary)} 字）{RESET}")
+            else:
+                print(f"（无值得沉淀的内容）{RESET}")
         rest = rest[-max_len:]
     return system + rest
 
