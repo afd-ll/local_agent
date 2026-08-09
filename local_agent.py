@@ -273,7 +273,7 @@ def compress_memory(mem):
         }
         if "qwen3" in MODEL:
             req["think"] = False
-        resp = requests.post(OLLAMA_URL, json=req, timeout=120)
+        resp = requests.post(OLLAMA_URL, json=req, timeout=(10, 300))
         summary = resp.json()["message"]["content"].strip()
         if summary:
             old_sum = mem.get("compressed", "")
@@ -316,7 +316,7 @@ def condense_dialog(text):
         }
         if "qwen3" in MODEL:
             req["think"] = False
-        resp = requests.post(OLLAMA_URL, json=req, timeout=120)
+        resp = requests.post(OLLAMA_URL, json=req, timeout=(10, 300))
         summary = resp.json()["message"]["content"].strip()
         return summary if summary else None
     except Exception as e:
@@ -405,7 +405,8 @@ def call_ollama_stream(messages):
     }
     if "qwen3" in MODEL:
         payload["think"] = True   # qwen3 专属：思考模式；qwen2.5 等模型传了会 400
-    resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=120)
+    # timeout=(连接, 读)：读超时 600s——写代码/长输出任务首 token 前可能空闲很久，120s 会打断
+    resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(10, 600))
     resp.raise_for_status()
 
     content_parts = []
