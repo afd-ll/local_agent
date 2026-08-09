@@ -105,15 +105,14 @@ def load_soul(path=None):
 
 # ---------- 灵魂初始化：用户偏好收集（硬规定） ----------
 def parse_soul_prefs(soul_text):
-    """解析灵魂文件里的【用户偏好】区块；返回 {'称呼','名字','相处方式'} 字典"""
+    """解析灵魂文件里的【用户偏好】区块；宽松匹配中英文冒号/空格。返回 {'称呼','名字','相处方式'}"""
     prefs = {"称呼": "", "名字": "", "相处方式": ""}
     if "【用户偏好】" in soul_text:
         block = soul_text.split("【用户偏好】", 1)[1]
-        for key in prefs:
-            for line in block.splitlines():
-                if line.startswith(key + "："):
-                    prefs[key] = line.split("：", 1)[1].strip()
-                    break
+        for line in block.splitlines():
+            m = re.match(r"^\s*(称呼|名字|相处方式)\s*[:：]\s*(.+)$", line)
+            if m and m.group(1) in prefs:
+                prefs[m.group(1)] = m.group(2).strip()
     return prefs
 
 def set_pref(soul_file, key, value):
@@ -161,11 +160,13 @@ def collect_prefs(soul_file):
     for key, q in questions.items():
         if not prefs.get(key):
             print(f"\n{BOLD}💬 {q}{RESET}")
+            print(f"{GRAY}（直接回车可跳过此项，之后可在灵魂文件里修改）{RESET}")
             ans = input(f"{GREEN}你: {RESET}").strip()
-            if ans:
-                set_pref(soul_file, key, ans)
-                prefs[key] = ans
-                print(f"{GRAY}✅ 已写入灵魂文件{RESET}")
+            if not ans:
+                ans = "（未指定）"   # 占位：避免每次启动都问
+            set_pref(soul_file, key, ans)
+            prefs[key] = ans
+            print(f"{GRAY}✅ 已写入灵魂文件{RESET}")
     # 重新读取完整灵魂（含新写入的偏好）
     return load_soul(soul_file) or ""
 
@@ -268,6 +269,16 @@ tools = [
             "name": "search_web",
             "description": "联网搜索（百度/必应）。query 为搜索关键词，返回前 5 条结果标题和摘要。",
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_pref",
+            "description": "更新灵魂文件里的用户偏好（称呼/名字/相处方式）。当用户明确要求改变称呼、改名或调整相处方式时调用。key 取 '称呼'/'名字'/'相处方式'，value 为新内容。",
+            "parameters": {"type": "object", "properties": {
+                "key": {"type": "string", "enum": ["称呼", "名字", "相处方式"]},
+                "value": {"type": "string"}}}
         }
     },
     {
@@ -401,6 +412,14 @@ def remember(mem, content):
     """记住一条重要信息（跨会话保存到记忆文件）"""
     return add_memory(mem, content)
 
+def update_pref(key, value):
+    """更新灵魂文件里的用户偏好（对话中实时生效）"""
+    if key not in ("称呼", "名字", "相处方式"):
+        return f"❌ 不支持的偏好字段: {key}（只能改 称呼/名字/相处方式）"
+    if set_pref(SOUL_FILE, key, value):
+        return f"✅ 已更新灵魂偏好 {key} = {value}，下次启动生效"
+    return "❌ 写入灵魂文件失败"
+
 # ---------- 工具分发 ----------
 def run_tool(name, args, mem):
     if name == "list_files":
@@ -413,6 +432,8 @@ def run_tool(name, args, mem):
         return write_file(args.get("path", ""), args.get("content", ""))
     elif name == "search_web":
         return search_web(args.get("query", ""))
+    elif name == "update_pref":
+        return update_pref(args.get("key", ""), args.get("value", ""))
     elif name == "remember":
         return remember(mem, args.get("content", ""))
     else:
@@ -431,7 +452,7 @@ def condense_dialog(text):
             "model": MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False, "think": False,
-            "options": {"num_ctx": 8192}
+            "options": {"num_ctx": 4096}   # 沉淀任务小上下文，不与主对话抢显存
         }, timeout=120)
         summary = resp.json()["message"]["content"].strip()
         return summary if summary else None
@@ -539,13 +560,20 @@ def main():
     mem = load_memory()
     soul = load_soul()
 
-    # 灵魂初始化（硬规定）：soul 存在但偏好不全 → 先问用户，答完写入 soul 文件
-    if soul:
-        prefs = parse_soul_prefs(soul)
-        if any(not v for v in prefs.values()):
-            print(f"\n{BOLD}🔧 首次使用：先认识你一下{RESET}")
+    # 灵魂初始化（硬规定）：
+    #  - 无 soul 文件 → 引导用户创建并收集偏好
+    #  - 有 soul 但偏好不全 → 逐项补齐，答完写入 soul 文件
+    if not soul:
+        print(f"\n{BOLD}💡 未找到灵魂文件（{SOUL_FILE}）{RESET}")
+        print(f"{GRAY}灵魂文件里可以定义我的身份、你的偏好，让我更懂你{RESET}")
+        create = input(f"{GREEN}要不要先认识一下？输入 y 创建，其他跳过: {RESET}").strip().lower()
+        if create == "y":
             soul = collect_prefs(SOUL_FILE)
-            print(f"{GRAY}💫 灵魂文件已完善，开始干活{RESET}")
+            print(f"{GRAY}💫 灵魂文件已创建，开始干活{RESET}")
+    elif any(not v for v in parse_soul_prefs(soul).values()):
+        print(f"\n{BOLD}🔧 首次使用：先认识你一下{RESET}")
+        soul = collect_prefs(SOUL_FILE)
+        print(f"{GRAY}💫 灵魂文件已完善，开始干活{RESET}")
 
     mem_text = memory_to_text(mem)
 
@@ -560,13 +588,14 @@ def main():
     save_memory(mem)   # 记录本次运行时间，供下次对比
 
     system_prompt = (
-        "你是一个运行在本地的小型助手，能调用 6 个工具："
+        "你是一个运行在本地的小型助手，能调用 7 个工具："
         "list_files（列目录）、echo_message（打印）、execute_shell（执行cmd命令）、"
-        "write_file（写文件）、search_web（联网搜索）、remember（记住重要信息）。\n"
+        "write_file（写文件）、search_web（联网搜索）、update_pref（更新用户偏好）、remember（记住重要信息）。\n"
         "使用原则：\n"
         "1. 日常闲聊、问答、寒暄直接回答，不要调用任何工具，也不要考虑用户是否想用其他工具。\n"
         "2. 只有当任务确实需要时才调用对应工具：查文件用 list_files、执行命令用 execute_shell、"
-        "写文件用 write_file、查最新资料用 search_web、用户要求记住时用 remember。\n"
+        "写文件用 write_file、查最新资料用 search_web、用户要求记住时用 remember、"
+        "用户明确要求改变称呼/名字/相处方式时用 update_pref。\n"
         "3. 复杂任务可以自动规划多步工具链：一次调一个工具，等结果返回后自己判断下一步。\n"
         "   例如用户说'帮我记住我的设备信息'：先用 execute_shell 查询系统信息，再用 remember 记住结果。\n"
         "4. 遇到不常见或复杂的命令/工具用法不明确时，不要凭猜测执行：先用 execute_shell 执行 '<命令> -help'、'<命令> /?' 或 'help <命令>' 查看帮助，或用 search_web 搜索用法。日常简单命令（dir、ipconfig、type 等）直接用。\n"
