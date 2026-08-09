@@ -17,14 +17,22 @@ DANGEROUS = ["rm -rf", "del /f", "del /q", "format", "shutdown", "rd /s", "rmdir
 
 @register_tool(
     "list_files",
-    "列出指定目录下的文件和文件夹（Windows dir 命令）。directory 参数为要列出的目录路径，省略则默认当前目录。",
+    "列出指定目录下的所有文件和文件夹。directory 必须是完整路径（如 D:\\\\ 或 D:\\\\work），不要省略反斜杠。返回完整列表。",
     {"type": "object", "properties": {"directory": {"type": "string", "default": "."}}},
 )
 def list_files(args, ctx):
     directory = args.get("directory", ".")
     try:
-        result = subprocess.run(["cmd", "/c", "dir", directory], capture_output=True, text=True, timeout=10)
-        return result.stdout
+        # /b 只输出名称（避免卷标/统计信息干扰），/a 含隐藏文件；显式 gbk 编码 + 容错
+        result = subprocess.run(["cmd", "/c", "dir", "/b", "/a", directory],
+                                capture_output=True, encoding="gbk", errors="replace", timeout=15)
+        if result.returncode == 0:
+            items = [ln for ln in result.stdout.splitlines() if ln.strip()]
+            return f"目录 [{directory}] 共 {len(items)} 项:\n" + "\n".join(items)
+        else:
+            return f"查询失败 [{directory}]: {result.stderr.strip() or '目录不存在'}"
+    except subprocess.TimeoutExpired:
+        return "查询超时"
     except Exception as e:
         return f"执行出错: {e}"
 
