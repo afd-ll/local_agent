@@ -98,6 +98,26 @@ def format_time_gap(prev_ts, now_ts):
     hours = int((gap % 86400) // 3600)
     return f"{days} 天 {hours} 小时前"
 
+def build_soul_section(soul_text):
+    """把灵魂文件转成清晰的 system 注入文本：
+    【用户偏好】区块解析后语义明确化——'称呼'是对用户的称呼，'名字'是 AI 自己的名字，
+    显式区分，避免模型把'名字'误当用户名字。"""
+    if not soul_text:
+        return None
+    if "【用户偏好】" not in soul_text:
+        return soul_text
+    main_part, _ = soul_text.split("【用户偏好】", 1)
+    prefs = parse_soul_prefs(soul_text)
+    lines = []
+    if prefs.get("称呼"):
+        lines.append(f"- 称呼用户为：{prefs['称呼']}")
+    if prefs.get("名字"):
+        lines.append(f"- 你的名字是：{prefs['名字']}（这是用户给你起的名字，是【你 AI 的名字】，不是用户的名字）")
+    if prefs.get("相处方式"):
+        lines.append(f"- 相处方式：{prefs['相处方式']}")
+    block = "【用户偏好】（硬规定）\n" + "\n".join(lines)
+    return (main_part.rstrip() + "\n\n" + block).strip()
+
 def load_soul(path=None):
     """读取灵魂文件（身份设定）；不存在返回 None"""
     path = path or SOUL_FILE
@@ -423,7 +443,9 @@ def main():
         f"【历史记忆】（跨会话保留，供参考）\n{mem_text}"
     )
     if soul:
-        system_prompt = soul + "\n\n" + system_prompt   # 灵魂（身份）放最前，优先级最高
+        soul_section = build_soul_section(soul)
+        if soul_section:
+            system_prompt = soul_section + "\n\n" + system_prompt   # 灵魂（身份）放最前，优先级最高
     messages = [{"role": "system", "content": system_prompt}]
     print(f"{BOLD}Local Agent 已启动（{MODEL}）{RESET}")
     print(f"{GRAY}📖 已读取记忆文件: {MEMORY_FILE}{RESET}")
