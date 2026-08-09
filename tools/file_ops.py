@@ -53,7 +53,7 @@ def execute_shell(args, ctx):
             return f"❌ 禁止执行含有 '{kw}' 的命令。"
     try:
         result = subprocess.run(["cmd", "/c", command], capture_output=True, text=True,
-                                encoding="gbk", errors="replace", timeout=30)
+                                encoding="gbk", errors="replace", timeout=120)
         if result.returncode == 0:
             return f"✅ 执行成功:\n{result.stdout}"
         else:
@@ -117,6 +117,9 @@ def read_file(args, ctx):
 def write_file(args, ctx):
     path = args.get("path", "")
     content = args.get("content", "")
+    # 防御：内容异常大（格式错乱/循环粘贴）直接拒绝；本地写入本身不会超时
+    if len(content) > 2 * 1024 * 1024:
+        return "❌ 内容超过 2MB 上限，拒绝写入（可能格式错乱）。请分段写入。"
     low = path.lower()
     user_dir = os.environ.get("USERPROFILE", "").lower() or os.environ.get("HOME", "").lower()
     blocked = ["c:\\windows", "c:\\program files", "c:\\$recycle", "system32",
