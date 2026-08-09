@@ -65,6 +65,43 @@ def execute_shell(args, ctx):
 
 
 @register_tool(
+    "read_file",
+    "读取文本文件的内容。path 为完整路径（如 D:\\\\work\\note.txt）。lines 为最多读取的行数（默认 100，防止大文件撑爆上下文）。用于查看代码、文档、笔记、配置文件等。",
+    {"type": "object", "properties": {
+        "path": {"type": "string"},
+        "lines": {"type": "integer", "default": 100}}},
+)
+def read_file(args, ctx):
+    path = args.get("path", "")
+    try:
+        lines = int(args.get("lines", 100) or 100)
+    except (TypeError, ValueError):
+        lines = 100
+    if not path:
+        return "路径不能为空"
+    if not os.path.isfile(path):
+        return f"文件不存在: {path}"
+    # 编码探测：优先 UTF-8，失败回退 GBK（Windows 中文文件常见）
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        try:
+            with open(path, encoding="gbk", errors="replace") as f:
+                content = f.read()
+        except Exception as e:
+            return f"读取失败（编码无法识别）: {e}"
+    except Exception as e:
+        return f"读取失败: {e}"
+    all_lines = content.splitlines()
+    total = len(all_lines)
+    if lines and lines > 0 and total > lines:
+        shown = "\n".join(all_lines[:lines])
+        return f"文件 [{path}] 共 {total} 行，显示前 {lines} 行:\n{shown}\n...（还有 {total - lines} 行未显示）"
+    return f"文件 [{path}] 共 {total} 行:\n{content}"
+
+
+@register_tool(
     "write_file",
     "把文本内容写入指定文件（UTF-8 编码，自动创建目录）。path 为完整路径，content 为要写入的内容。系统目录禁止写入。",
     {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
