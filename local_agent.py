@@ -154,7 +154,7 @@ def collect_prefs(soul_file):
     prefs = parse_soul_prefs(soul_text)
     questions = {
         "称呼": "你想让我怎么称呼你？",
-        "名字": "你给自己起的名字（或昵称）是什么？",
+        "名字": "你给我起的名字是什么？（比如：小弟 / 小枢 / 阿枢...）",
         "相处方式": "你希望我怎么跟你相处？（比如：简洁直接 / 幽默一点 / 啰嗦一点...）",
     }
     for key, q in questions.items():
@@ -275,7 +275,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "update_pref",
-            "description": "更新灵魂文件里的用户偏好（称呼/名字/相处方式）。当用户明确要求改变称呼、改名或调整相处方式时调用。key 取 '称呼'/'名字'/'相处方式'，value 为新内容。",
+            "description": "更新灵魂文件里的用户偏好（称呼/名字/相处方式）。当用户明确要求改变对你的称呼、给你起新名字或调整相处方式时调用。key 取 '称呼'/'名字'/'相处方式'，value 为新内容。",
             "parameters": {"type": "object", "properties": {
                 "key": {"type": "string", "enum": ["称呼", "名字", "相处方式"]},
                 "value": {"type": "string"}}}
