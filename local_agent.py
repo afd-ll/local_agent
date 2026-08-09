@@ -429,7 +429,7 @@ def call_ollama_stream(messages):
         # 按键：Q 打断 / T 展开收起思考
         keys = read_keys()
         if 'q' in keys:
-            print(f"\n{RED} 已打断{RESET}", flush=True)
+            print(f"\r{RED} 已打断{RESET}   ", flush=True)
             resp.close()
             return {"role": "assistant", "content": "".join(content_parts)}, False, 0
         if 't' in keys:
@@ -449,27 +449,29 @@ def call_ollama_stream(messages):
             think_parts.append(think_piece)
             if think_expanded:
                 print(f"{GRAY}{think_piece}{RESET}", end="", flush=True)
-            elif not think_status_shown:
-                print(f"\n{GRAY} 思考中...（T 展开 / Q 打断）{RESET}", end="", flush=True)
+            else:
+                # 收起模式：同一行动态刷新字数——长思考时证明它在干活，不是卡死
+                think_len_now = len("".join(think_parts))
+                print(f"\r{GRAY} 思考中... {think_len_now} 字（T 展开 / Q 打断）{RESET}", end="", flush=True)
                 think_status_shown = True
         piece = msg.get("content")
         if piece:
             if not think_ended:
                 think_ended = True
-                # 思考结束：默认收起 → 显示摘要
+                # 思考结束：\r 先覆盖掉"思考中...N字"状态行，再显示摘要
                 if think_parts and not think_expanded:
                     think_len = len("".join(think_parts))
                     think_secs = time.time() - think_start_ts
-                    print(f"{RESET}\n{GRAY} 思考 {think_len} 字 · {think_secs:.1f}s（T 展开）{RESET}", end="", flush=True)
+                    print(f"\r{GRAY} 思考完成：{think_len} 字 · {think_secs:.1f}s（T 展开）{RESET}", end="", flush=True)
                 print(f"{RESET}\n", end="", flush=True)
             content_parts.append(piece)
             print(piece, end="", flush=True)
 
     if tool_calls is not None:
-        # 思考完直接调工具（无 content）：收起模式显示摘要
+        # 思考完直接调工具（无 content）：\r 覆盖状态行后显示摘要
         if think_parts and not think_ended and not think_expanded:
             think_len = len("".join(think_parts))
-            print(f"{RESET}\n{GRAY} 思考 {think_len} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
+            print(f"\r{GRAY} 思考完成：{think_len} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
         print(f"{RESET}", flush=True)
         return {"role": "assistant", "content": "", "tool_calls": tool_calls}, True, prompt_tokens
     print(f"{RESET}", flush=True)
