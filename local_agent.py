@@ -45,7 +45,8 @@ AGENT_DIR = os.path.join(os.path.expanduser("~"), ".agent")   # 数据目录：�
 MAX_MEMORY_ENTRIES = 20   # 记忆条目上限，超过触发压缩
 MEMORY_FILE = os.path.join(AGENT_DIR, "agent_memory.json")   # 记忆文件
 SOUL_FILE = os.path.join(AGENT_DIR, "soul.md")   # 灵魂文件（身份设定，启动时注入 system）
-SKILLS_DIR = os.path.join(AGENT_DIR, "skills")    # 技能目录（每个技能一个 .md，按需加载/学习保存）
+SKILLS_DIR = os.path.join(AGENT_DIR, "skills")    # 技能目录（用户学习的技能，跨会话保留）
+BUILTIN_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")  # 内置技能（仓库自带范本，只读）
 
 # Tavily 搜索 API key：优先读环境变量 TAVILY_API_KEY，没有就用这里填的
 # 注册获取（免费额度 1000 次/月）：https://tavily.com
@@ -119,20 +120,26 @@ def build_soul_section(soul_text):
     block = "【用户偏好】（硬规定）\n" + "\n".join(lines)
     return (main_part.rstrip() + "\n\n" + block).strip()
 
-def build_skills_index(skills_dir):
-    """扫描技能目录，生成 name+description 索引（常驻 system，内容按需加载）"""
-    if not os.path.isdir(skills_dir):
-        return "（无）"
+def build_skills_index(builtin_dir, user_dir):
+    """合并内置+用户技能索引（用户同名覆盖内置）。索引常驻 system，内容按需加载"""
     from tools.skills_tools import parse_skill
+    seen = set()
     lines = []
-    for f in sorted(os.listdir(skills_dir)):
-        if f.endswith(".md"):
-            try:
-                with open(os.path.join(skills_dir, f), encoding="utf-8") as fh:
-                    name, desc, _ = parse_skill(fh.read())
-                lines.append(f"- {name or f[:-3]}：{desc or '无描述'}")
-            except Exception:
-                continue
+    for sdir in (user_dir, builtin_dir):   # 用户优先：同名用户技能覆盖内置
+        if not os.path.isdir(sdir):
+            continue
+        for f in sorted(os.listdir(sdir)):
+            if f.endswith(".md"):
+                try:
+                    with open(os.path.join(sdir, f), encoding="utf-8") as fh:
+                        name, desc, _ = parse_skill(fh.read())
+                    key = name or f[:-3]
+                    if key in seen:
+                        continue   # 用户同名技能覆盖内置，索引只出现一次
+                    seen.add(key)
+                    lines.append(f"- {key}：{desc or '无描述'}")
+                except Exception:
+                    continue
     return "\n".join(lines) if lines else "（无）"
 
 def load_soul(path=None):
@@ -469,9 +476,10 @@ def main():
         "soul_file": SOUL_FILE,
         "set_pref": set_pref,
         "skills_dir": SKILLS_DIR,
+        "builtin_skills_dir": BUILTIN_SKILLS_DIR,
     }
     os.makedirs(SKILLS_DIR, exist_ok=True)
-    skills_index = build_skills_index(SKILLS_DIR)
+    skills_index = build_skills_index(BUILTIN_SKILLS_DIR, SKILLS_DIR)
 
     mem_text = memory_to_text(mem)
 

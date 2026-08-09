@@ -39,29 +39,36 @@ def parse_skill(content):
     return name, desc, body
 
 
-def _skills_dir(ctx):
-    return ctx.get("skills_dir", "skills")
+def _skills_dirs(ctx):
+    """用户技能目录 + 内置技能目录（内置只读）"""
+    return ctx.get("skills_dir", "skills"), ctx.get("builtin_skills_dir", "")
 
 
 @register_tool(
     "list_skills",
-    "列出所有已保存的技能（技能名 + 一句话说明）。用户问你会什么技能、或你不知道该用什么方法时调用。",
+    "列出所有可用的技能（技能名 + 一句话说明），包括内置技能和你学会的技能。用户问你会什么技能、或你不知道该用什么方法时调用。",
     {"type": "object", "properties": {}},
 )
 def list_skills(args, ctx):
-    sdir = _skills_dir(ctx)
-    if not os.path.isdir(sdir):
-        return "还没有任何技能（可以让我用 learn_skill 学习）"
+    user_dir, builtin_dir = _skills_dirs(ctx)
+    seen = set()
     lines = []
-    for f in sorted(os.listdir(sdir)):
-        if f.endswith(".md"):
-            try:
-                with open(os.path.join(sdir, f), encoding="utf-8") as fh:
-                    name, desc, _ = parse_skill(fh.read())
-                lines.append(f"- {name or f[:-3]}：{desc or '无描述'}")
-            except Exception:
-                continue
-    return "技能列表：\n" + "\n".join(lines) if lines else "还没有任何技能"
+    for sdir in (builtin_dir, user_dir):
+        if not sdir or not os.path.isdir(sdir):
+            continue
+        for f in sorted(os.listdir(sdir)):
+            if f.endswith(".md"):
+                try:
+                    with open(os.path.join(sdir, f), encoding="utf-8") as fh:
+                        name, desc, _ = parse_skill(fh.read())
+                    key = name or f[:-3]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    lines.append(f"- {key}：{desc or '无描述'}")
+                except Exception:
+                    continue
+    return "技能列表：\n" + "\n".join(lines) if lines else "还没有任何技能（内置技能未找到）"
 
 
 @register_tool(
@@ -71,17 +78,21 @@ def list_skills(args, ctx):
 )
 def load_skill(args, ctx):
     name = args.get("name", "")
-    sdir = _skills_dir(ctx)
-    path = os.path.join(sdir, name + ".md")
-    if not os.path.isfile(path):
-        return f"未找到技能 '{name}'（用 list_skills 查看可用技能）"
-    try:
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
-        _, _, body = parse_skill(content)
-        return f"技能 [{name}] 内容：\n{body}"
-    except Exception as e:
-        return f"读取技能失败: {e}"
+    user_dir, builtin_dir = _skills_dirs(ctx)
+    # 用户技能优先，内置技能兜底
+    for sdir in (user_dir, builtin_dir):
+        if not sdir:
+            continue
+        path = os.path.join(sdir, name + ".md")
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    content = f.read()
+                _, _, body = parse_skill(content)
+                return f"技能 [{name}] 内容：\n{body}"
+            except Exception as e:
+                return f"读取技能失败: {e}"
+    return f"未找到技能 '{name}'（用 list_skills 查看可用技能）"
 
 
 @register_tool(
@@ -98,7 +109,8 @@ def learn_skill(args, ctx):
     content = (args.get("content", "") or "").strip()
     if not name or not content:
         return "❌ 技能名和内容不能为空"
-    sdir = _skills_dir(ctx)
+    user_dir, _ = _skills_dirs(ctx)
+    sdir = user_dir
     try:
         os.makedirs(sdir, exist_ok=True)
         # 文件名安全化（去非法字符）
