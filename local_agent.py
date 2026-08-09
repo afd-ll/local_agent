@@ -34,7 +34,7 @@ except ImportError:
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "qwen3:4b"
 MAX_TURNS = 5        # 单轮对话中工具调用的最大轮数，防死循环
-MAX_HISTORY = 24     # 滑动窗口：16K 上下文下保留最近 24 条消息（不含 system）
+MAX_HISTORY = 16     # 滑动窗口：16K 上下文下保留最近 16 条消息（24 条含工具结果易超窗）
 AGENT_DIR = os.path.join(os.path.expanduser("~"), ".agent")   # 数据目录：默认 ~/.agent/（可用命令行参数覆盖）
 MAX_MEMORY_ENTRIES = 20   # 记忆条目上限，超过触发压缩
 MEMORY_FILE = os.path.join(AGENT_DIR, "agent_memory.json")   # 记忆文件
@@ -148,7 +148,8 @@ def compress_memory(mem):
         resp = requests.post(OLLAMA_URL, json={
             "model": MODEL, "messages": [
                 {"role": "user", "content": prompt}
-            ], "stream": False, "think": False
+            ], "stream": False, "think": False,
+            "options": {"num_ctx": 4096}   # 压缩任务小上下文，不与主对话抢显存
         }, timeout=120)
         summary = resp.json()["message"]["content"].strip()
         if summary:
@@ -225,7 +226,8 @@ def echo_message(message):
     return f"已执行: echo {message}"
 
 def execute_shell(command):
-    dangerous = ["rm -rf", "del /f", "del /q", "format", "shutdown", "rd /s", "rmdir /s", "diskpart", "reg delete", "taskkill /f /im"]
+    dangerous = ["rm -rf", "del /f", "del /q", "format", "shutdown", "rd /s", "rmdir /s",
+                 "diskpart", "reg delete", "taskkill /f /im", "cipher /w", "vssadmin delete"]
     for kw in dangerous:
         if kw in command.lower():
             return f"❌ 禁止执行含有 '{kw}' 的命令。"
@@ -241,12 +243,16 @@ def execute_shell(command):
         return f"💥 {e}"
 
 def write_file(path, content):
-    """文件写入（UTF-8），系统目录保护"""
+    """文件写入（UTF-8），系统目录保护（动态识别用户目录）"""
     low = path.lower()
+    user_dir = os.environ.get("USERPROFILE", "").lower() or os.environ.get("HOME", "").lower()
     blocked = ["c:\\windows", "c:\\program files", "c:\\$recycle", "system32",
-               "c:\\users\\wen\\appdata", "c:\\boot", "c:\\programdata"]
+               "c:\\boot", "c:\\programdata"]
+    if user_dir:
+        blocked.append(os.path.join(user_dir, "appdata"))
+        blocked.append(os.path.join(user_dir, "desktop"))   # 桌面也保护，防乱写
     for b in blocked:
-        if low.startswith(b):
+        if b and low.startswith(b):
             return f"❌ 禁止写入系统目录: {b}"
     try:
         parent = os.path.dirname(path)
@@ -271,13 +277,16 @@ def search_tavily(query):
             "query": query,
             "max_results": 5,
             "search_depth": "basic",
-            "include_answer": False
+            "include_answer": True      # 让 Tavily 生成短答案，直接可用
         }, timeout=20)
         data = resp.json()
         results = data.get("results", [])
         if not results:
             return None
         out = []
+        answer = data.get("answer")
+        if answer:
+            out.append(f"💡 摘要：{answer[:300]}")
         for i, r in enumerate(results[:5]):
             out.append(f"{i+1}. {r.get('title', '')}\n   {r.get('url', '')}\n   {(r.get('content', '') or '')[:150]}")
         return "搜索结果：\n" + "\n".join(out)
@@ -485,7 +494,7 @@ def main():
         "写文件用 write_file、查最新资料用 search_web、用户要求记住时用 remember。\n"
         "3. 复杂任务可以自动规划多步工具链：一次调一个工具，等结果返回后自己判断下一步。\n"
         "   例如用户说'帮我记住我的设备信息'：先用 execute_shell 查询系统信息，再用 remember 记住结果。\n"
-        "4. 不确定某个命令或工具的用法时，不要凭猜测执行：先用 execute_shell 执行 '<命令> -help'、'<命令> /?' 或 'help <命令>' 查看帮助，或用 search_web 搜索用法。\n"
+        "4. 遇到不常见或复杂的命令/工具用法不明确时，不要凭猜测执行：先用 execute_shell 执行 '<命令> -help'、'<命令> /?' 或 'help <命令>' 查看帮助，或用 search_web 搜索用法。日常简单命令（dir、ipconfig、type 等）直接用。\n"
         "5. 不要猜测用户想要用哪个工具——任务需要什么就用什么，不需要就不调用。\n"
         "6. 工具结果能直接回答用户时，用简洁中文总结，不重复输出原始内容。\n"
         f"\n【时间】当前：{time_str}（星期{weekday}）。距离上次会话：{gap_text}。\n"
@@ -542,8 +551,9 @@ def main():
                     try:
                         result = run_tool(func_name, args, mem)
                     except Exception as e:
-                        # 工具崩溃不退出程序：把错误作为结果汇报给 AI，让它决策换方法或告知用户
-                        result = (f"❌ 工具 {func_name} 执行出错: {type(e).__name__}: {e}。"
+                        # 工具崩溃不退出程序：错误截断后作为结果汇报给 AI，让它决策换方法或告知用户
+                        err_msg = f"{type(e).__name__}: {e}"[:200]
+                        result = (f"❌ 工具 {func_name} 执行出错: {err_msg}。"
                                   "请根据这个错误决定：尝试其他方法，或告知用户无法完成。")
                     elapsed = time.time() - t_tool
                     print(f"{GREEN}[调用工具] {func_name}({json.dumps(args, ensure_ascii=False)}) ({elapsed:.1f}s){RESET}")
