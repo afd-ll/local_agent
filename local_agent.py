@@ -40,7 +40,10 @@ TOOLS_SCHEMA = build_tools_schema()
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "qwen3:4b"
 MAX_TURNS = 5        # 单轮对话中工具调用的最大轮数，防死循环
-MAX_HISTORY = 16     # 滑动窗口：16K 上下文下保留最近 16 条消息（24 条含工具结果易超窗）
+MAX_HISTORY = 16     # 滑动窗口：条数兜底（16 条，含工具结果易超窗）
+NUM_CTX = 16384      # 上下文窗口（token）
+CTX_TRIM_RATIO = 0.50   # 上下文用到 50% 时触发记忆沉淀
+CTX_KEEP_RATIO = 0.20   # 沉淀后裁剪到约 20%（保留最近 40% 条数近似）
 AGENT_DIR = os.path.join(os.path.expanduser("~"), ".agent")   # 数据目录：默认 ~/.agent/（可用命令行参数覆盖）
 MAX_MEMORY_ENTRIES = 20   # 记忆条目上限，超过触发压缩
 MEMORY_FILE = os.path.join(AGENT_DIR, "agent_memory.json")   # 记忆文件
@@ -348,6 +351,33 @@ def trim_history(messages, mem, max_len=MAX_HISTORY):
         rest = rest[-keep:]
     return system + rest
 
+def trim_to_ratio(messages, mem, keep_ratio):
+    """按 token 百分比沉淀裁剪：上下文用到阈值时调用。
+    沉淀早期对话进记忆，然后保留最近 keep_ratio 比例的消息
+    （token 比例用条数比例近似——无分词器，平均消息长度相近时足够准）"""
+    system = [m for m in messages if m["role"] == "system"]
+    rest = [m for m in messages if m["role"] != "system"]
+    keep = max(int(len(rest) * keep_ratio), 8)   # 至少保留 8 条
+    if len(rest) <= keep:
+        return messages
+    drop = rest[:len(rest) - keep]
+    dialog = []
+    for m in drop[-8:]:
+        role = m["role"]
+        content = str(m.get("content", ""))[:300]
+        if role in ("user", "assistant") and content and not m.get("tool_calls"):
+            dialog.append(f"{'用户' if role == 'user' else '助手'}: {content}")
+    if len(dialog) >= 3:
+        print(f"{GRAY} 记忆沉淀：压缩早期对话中...{RESET}", end="", flush=True)
+        summary = condense_dialog("\n".join(dialog))
+        if summary:
+            add_memory(mem, f"[对话沉淀] {summary}")
+            print(f" ✅ 已存入记忆（{len(summary)} 字）{RESET}")
+        else:
+            print(f"（无值得沉淀的内容）{RESET}")
+    rest = rest[-keep:]
+    return system + rest
+
 def read_keys():
     """非阻塞读取按键：'q'=打断输出 / 't'=展开收起思考 / [] = 无按键"""
     if msvcrt is None:
@@ -371,7 +401,7 @@ def call_ollama_stream(messages):
         "messages": messages,
         "tools": TOOLS_SCHEMA,
         "stream": True,
-        "options": {"num_ctx": 16384}
+        "options": {"num_ctx": NUM_CTX}
     }
     if "qwen3" in MODEL:
         payload["think"] = True   # qwen3 专属：思考模式；qwen2.5 等模型传了会 400
@@ -381,6 +411,7 @@ def call_ollama_stream(messages):
     content_parts = []
     think_parts = []
     tool_calls = None
+    prompt_tokens = 0
     think_expanded = False      # 思考默认收起
     think_status_shown = False  # 收起模式的状态提示是否已显示
     think_start_ts = time.time()
@@ -392,12 +423,14 @@ def call_ollama_stream(messages):
             data = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if data.get("prompt_eval_count"):
+            prompt_tokens = data["prompt_eval_count"]   # 本次请求的输入 token 量（用于百分比沉淀）
         # 按键：Q 打断 / T 展开收起思考
         keys = read_keys()
         if 'q' in keys:
             print(f"\n{RED} 已打断{RESET}", flush=True)
             resp.close()
-            return {"role": "assistant", "content": "".join(content_parts)}, False
+            return {"role": "assistant", "content": "".join(content_parts)}, False, 0
         if 't' in keys:
             think_expanded = not think_expanded
             if think_expanded:
@@ -437,9 +470,9 @@ def call_ollama_stream(messages):
             think_len = len("".join(think_parts))
             print(f"{RESET}\n{GRAY} 思考 {think_len} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
         print(f"{RESET}", flush=True)
-        return {"role": "assistant", "content": "", "tool_calls": tool_calls}, True
+        return {"role": "assistant", "content": "", "tool_calls": tool_calls}, True, prompt_tokens
     print(f"{RESET}", flush=True)
-    return {"role": "assistant", "content": "".join(content_parts)}, False
+    return {"role": "assistant", "content": "".join(content_parts)}, False, prompt_tokens
 
 # ---------- 主循环 ----------
 def main():
@@ -544,11 +577,14 @@ def main():
 
         messages.append({"role": "user", "content": user})
         turns = 0
+        last_prompt_tokens = 0
         while turns < MAX_TURNS:
             turns += 1
             t_round = time.time()   # 本轮耗时计时
             try:
-                msg, is_tool = call_ollama_stream(messages)
+                msg, is_tool, prompt_tokens = call_ollama_stream(messages)
+                if prompt_tokens:
+                    last_prompt_tokens = prompt_tokens
             except Exception as e:
                 print(f"\n{RED}错误: {e}{RESET}")
                 break
@@ -578,7 +614,13 @@ def main():
         else:
             print(f"\n{RED} 工具调用轮数超限，已终止本轮。{RESET}")
 
-        messages = trim_history(messages, mem)
+        # 上下文管理：token 百分比触发沉淀（50% → 20%），条数机制兜底
+        if last_prompt_tokens and last_prompt_tokens > NUM_CTX * CTX_TRIM_RATIO:
+            pct = int(last_prompt_tokens / NUM_CTX * 100)
+            print(f"{GRAY} 上下文 {pct}%/{NUM_CTX}，触发沉淀缩减...{RESET}")
+            messages = trim_to_ratio(messages, mem, CTX_KEEP_RATIO)
+        else:
+            messages = trim_history(messages, mem)
 
 if __name__ == "__main__":
     main()
