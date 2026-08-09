@@ -185,14 +185,14 @@ def collect_prefs(soul_file):
     }
     for key, q in questions.items():
         if not prefs.get(key):
-            print(f"\n{BOLD}💬 {q}{RESET}")
+            print(f"\n{BOLD} {q}{RESET}")
             print(f"{GRAY}（直接回车可跳过此项，之后可在灵魂文件里修改）{RESET}")
             ans = input(f"{GREEN}你: {RESET}").strip()
             if not ans:
                 ans = "（未指定）"   # 占位：避免每次启动都问
             set_pref(soul_file, key, ans)
             prefs[key] = ans
-            print(f"{GRAY}✅ 已写入灵魂文件{RESET}")
+            print(f"{GRAY} 已写入灵魂文件{RESET}")
     # 重新读取完整灵魂（含新写入的偏好）
     return load_soul(soul_file) or ""
 
@@ -202,7 +202,7 @@ def save_memory(mem):
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             json.dump(mem, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"{RED}⚠️ 记忆保存失败: {e}{RESET}")
+        print(f"{RED} 记忆保存失败: {e}{RESET}")
 
 def memory_to_text(mem):
     """把记忆转成注入 system 的文本"""
@@ -223,9 +223,9 @@ def add_memory(mem, content):
             "time": time.strftime("%Y-%m-%d %H:%M")
         })
         save_memory(mem)
-        return f"✅ 已记住：{content[:60]}"
+        return f" 已记住：{content[:60]}"
     except Exception as e:
-        return f"❌ 记忆保存失败: {e}"
+        return f" 记忆保存失败: {e}"
 
 def compress_memory(mem):
     """记忆压缩：调本地模型把全部旧条目总结成一条长期记忆"""
@@ -252,7 +252,7 @@ def compress_memory(mem):
             save_memory(mem)   # 落盘！否则压缩结果只活在内存，重启丢失
             print(f"\n{GRAY}[记忆压缩] {len(old)} 条 → 长期记忆（已保存）{RESET}")
     except Exception as e:
-        print(f"{RED}⚠️ 记忆压缩失败: {e}{RESET}")
+        print(f"{RED} 记忆压缩失败: {e}{RESET}")
 
 # ---------- 工具定义 ----------
 # ---------- 工具定义：由 tools/ 目录自动加载（TOOLS_SCHEMA） ----------
@@ -266,7 +266,7 @@ def run_tool(name, args, ctx):
         return info["handler"](args, ctx)
     except Exception as e:
         err_msg = f"{type(e).__name__}: {e}"[:200]
-        return (f"❌ 工具 {name} 执行出错: {err_msg}。"
+        return (f" 工具 {name} 执行出错: {err_msg}。"
                 "请根据这个错误决定：尝试其他方法，或告知用户无法完成。")
 
 # ---------- 上下文裁剪（先沉淀，后裁剪） ----------
@@ -287,7 +287,7 @@ def condense_dialog(text):
         summary = resp.json()["message"]["content"].strip()
         return summary if summary else None
     except Exception as e:
-        print(f"{RED}⚠️ 对话沉淀失败: {e}{RESET}")
+        print(f"{RED} 对话沉淀失败: {e}{RESET}")
         return None
 
 def trim_history(messages, mem, max_len=MAX_HISTORY):
@@ -308,11 +308,11 @@ def trim_history(messages, mem, max_len=MAX_HISTORY):
         # 少于 3 条有意义的对话不值得调模型压缩，直接丢
         if len(dialog) >= 3:
             # 先提示再干活——沉淀要调本地模型压缩，几秒到十几秒，不提示会以为卡了
-            print(f"{GRAY}🔄 记忆沉淀：压缩早期对话中...{RESET}", end="", flush=True)
+            print(f"{GRAY} 记忆沉淀：压缩早期对话中...{RESET}", end="", flush=True)
             summary = condense_dialog("\n".join(dialog))
             if summary:
                 add_memory(mem, f"[对话沉淀] {summary}")
-                print(f" ✅ 已存入记忆（{len(summary)} 字）{RESET}")
+                print(f"  已存入记忆（{len(summary)} 字）{RESET}")
             else:
                 print(f"（无值得沉淀的内容）{RESET}")
         rest = rest[-keep:]
@@ -364,17 +364,17 @@ def call_ollama_stream(messages):
         # 按键：Q 打断 / T 展开收起思考
         keys = read_keys()
         if 'q' in keys:
-            print(f"\n{RED}⏹ 已打断{RESET}", flush=True)
+            print(f"\n{RED} 已打断{RESET}", flush=True)
             resp.close()
             return {"role": "assistant", "content": "".join(content_parts)}, False
         if 't' in keys:
             think_expanded = not think_expanded
             if think_expanded:
-                print(f"{RESET}\n{GRAY}💭 [展开思考]{RESET}\n", end="", flush=True)
+                print(f"{RESET}\n{GRAY} [展开思考]{RESET}\n", end="", flush=True)
                 if think_parts:
                     print(f"{GRAY}{''.join(think_parts)}{RESET}", end="", flush=True)
             else:
-                print(f"{RESET}\n{GRAY}💭 [收起思考]{RESET}", end="", flush=True)
+                print(f"{RESET}\n{GRAY} [收起思考]{RESET}", end="", flush=True)
         msg = data.get("message", {})
         if msg.get("tool_calls"):
             tool_calls = msg["tool_calls"]
@@ -385,7 +385,7 @@ def call_ollama_stream(messages):
             if think_expanded:
                 print(f"{GRAY}{think_piece}{RESET}", end="", flush=True)
             elif not think_status_shown:
-                print(f"\n{GRAY}💭 思考中...（T 展开 / Q 打断）{RESET}", end="", flush=True)
+                print(f"\n{GRAY} 思考中...（T 展开 / Q 打断）{RESET}", end="", flush=True)
                 think_status_shown = True
         piece = msg.get("content")
         if piece:
@@ -395,7 +395,7 @@ def call_ollama_stream(messages):
                 if think_parts and not think_expanded:
                     think_len = len("".join(think_parts))
                     think_secs = time.time() - think_start_ts
-                    print(f"{RESET}\n{GRAY}💭 思考 {think_len} 字 · {think_secs:.1f}s（T 展开）{RESET}", end="", flush=True)
+                    print(f"{RESET}\n{GRAY} 思考 {think_len} 字 · {think_secs:.1f}s（T 展开）{RESET}", end="", flush=True)
                 print(f"{RESET}\n", end="", flush=True)
             content_parts.append(piece)
             print(piece, end="", flush=True)
@@ -404,7 +404,7 @@ def call_ollama_stream(messages):
         # 思考完直接调工具（无 content）：收起模式显示摘要
         if think_parts and not think_ended and not think_expanded:
             think_len = len("".join(think_parts))
-            print(f"{RESET}\n{GRAY}💭 思考 {think_len} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
+            print(f"{RESET}\n{GRAY} 思考 {think_len} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
         print(f"{RESET}", flush=True)
         return {"role": "assistant", "content": "", "tool_calls": tool_calls}, True
     print(f"{RESET}", flush=True)
@@ -427,16 +427,16 @@ def main():
     #  - 无 soul 文件 → 引导用户创建并收集偏好
     #  - 有 soul 但偏好不全 → 逐项补齐，答完写入 soul 文件
     if not soul:
-        print(f"\n{BOLD}💡 未找到灵魂文件（{SOUL_FILE}）{RESET}")
+        print(f"\n{BOLD} 未找到灵魂文件（{SOUL_FILE}）{RESET}")
         print(f"{GRAY}灵魂文件里可以定义我的身份、你的偏好，让我更懂你{RESET}")
         create = input(f"{GREEN}要不要先认识一下？输入 y 创建，其他跳过: {RESET}").strip().lower()
         if create == "y":
             soul = collect_prefs(SOUL_FILE)
-            print(f"{GRAY}💫 灵魂文件已创建，开始干活{RESET}")
+            print(f"{GRAY} 灵魂文件已创建，开始干活{RESET}")
     elif any(not v for v in parse_soul_prefs(soul).values()):
-        print(f"\n{BOLD}🔧 首次使用：先认识你一下{RESET}")
+        print(f"\n{BOLD} 首次使用：先认识你一下{RESET}")
         soul = collect_prefs(SOUL_FILE)
-        print(f"{GRAY}💫 灵魂文件已完善，开始干活{RESET}")
+        print(f"{GRAY} 灵魂文件已完善，开始干活{RESET}")
 
     # 工具上下文：注入给所有工具的共享状态
     ctx = {
@@ -481,8 +481,8 @@ def main():
             system_prompt = soul_section + "\n\n" + system_prompt   # 灵魂（身份）放最前，优先级最高
     messages = [{"role": "system", "content": system_prompt}]
     print(f"{BOLD}Local Agent 已启动（{MODEL}）{RESET}")
-    print(f"{GRAY}📖 已读取记忆文件: {MEMORY_FILE}{RESET}")
-    print(f"{GRAY}💫 灵魂文件: {SOUL_FILE}（{'已注入' if soul else '未找到，跳过'}）{RESET}")
+    print(f"{GRAY} 已读取记忆文件: {MEMORY_FILE}{RESET}")
+    print(f"{GRAY} 灵魂文件: {SOUL_FILE}（{'已注入' if soul else '未找到，跳过'}）{RESET}")
     print(f"{GRAY}   近期记忆 {len(mem.get('entries', []))} 条 | 长期压缩 {'有' if mem.get('compressed') else '无'}{RESET}")
     print(f"{GRAY}输入 'exit' 退出 | '记住：xxx' 直接存记忆 | 生成时 T=展开/收起思考 Q=打断{RESET}")
 
@@ -534,10 +534,10 @@ def main():
                 messages.append(msg)
                 # 显示本轮生成耗时
                 gen_elapsed = time.time() - t_round
-                print(f"{GRAY}⏱ 本轮耗时 {gen_elapsed:.1f}s{RESET}")
+                print(f"{GRAY} 本轮耗时 {gen_elapsed:.1f}s{RESET}")
                 break
         else:
-            print(f"\n{RED}⚠️ 工具调用轮数超限，已终止本轮。{RESET}")
+            print(f"\n{RED} 工具调用轮数超限，已终止本轮。{RESET}")
 
         messages = trim_history(messages, mem)
 
