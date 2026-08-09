@@ -342,7 +342,7 @@ def call_ollama_stream(messages):
         "tools": TOOLS_SCHEMA,
         "stream": True,
         "think": True,           # qwen3 保留思考模式
-        "options": {"num_ctx": 16384}
+        "options": {"num_ctx": 8192}   # 8K 窗口（8B 在 6GB 显存下 16K 会溢出到 CPU，降一半换更多层回 GPU）
     }
     resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=120)
     resp.raise_for_status()
