@@ -897,9 +897,10 @@ def main():
                     result = run_tool(func_name, args, ctx)
                     elapsed = time.time() - t_tool
                     print(f"{GREEN}[调用工具] {func_name}({json.dumps(args, ensure_ascii=False)}) ({elapsed:.1f}s){RESET}")
-                    tool_msg = {"role": "tool", "content": result}
-                    if tc.get("id"):
-                        tool_msg["tool_call_id"] = tc["id"]
+                    # tool_call_id 恒带（空串也带）——DeepSeek 校验每个 tool_call_id
+                    # 必须有响应，缺字段/缺配对直接 400
+                    tool_msg = {"role": "tool", "content": result,
+                                "tool_call_id": tc.get("id", "")}
                     messages.append(tool_msg)
                 continue
             else:
