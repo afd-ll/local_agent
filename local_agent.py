@@ -463,7 +463,7 @@ def llm_once(messages, num_ctx=4096, think=False):
     if is_openai_mode():
         payload = {"model": MODEL, "messages": messages, "stream": False,
                    "temperature": 0.3, "max_tokens": 1024}
-        if "qwen3" in MODEL.lower() or "deepseek" in MODEL.lower():
+        if "qwen3" in MODEL.lower():
             payload["thinking"] = {"type": "enabled"} if think else {"type": "disabled"}
         headers = {"Authorization": "Bearer " + API_KEY}
         resp = requests.post(API_BASE + "/chat/completions", json=payload,
@@ -482,7 +482,9 @@ def call_openai_stream(messages):
     思考折叠/中转词/按键。返回 (msg, is_tool, prompt_tokens)"""
     payload = {"model": MODEL, "messages": messages, "stream": True,
                "temperature": 0.7, "tools": TOOLS_SCHEMA}
-    if "qwen3" in MODEL.lower() or "deepseek" in MODEL.lower():
+    # thinking 参数仅 qwen3（硅基流动）传；deepseek-chat 是 non-thinking 模型，
+    # 传了 thinking 偶发 400（官方文档仅 reasoner 支持）
+    if "qwen3" in MODEL.lower():
         payload["thinking"] = {"type": "enabled"}
     headers = {"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"}
     resp = requests.post(API_BASE + "/chat/completions", json=payload, headers=headers,
