@@ -356,6 +356,11 @@ def trim_history(messages, mem, max_len=MAX_HISTORY):
     rest = [m for m in messages if m["role"] != "system"]
     keep = max_len - 4   # 留余量：一次裁到 max_len-4，2-3 轮才触发一次裁剪
     if len(rest) > max_len:
+        # 裁剪后必须从 user 消息开头（孤立 tool/assistant tool_calls 会让
+        # DeepSeek 报 "tool must follow tool_calls" 400）
+        first_user = next((i for i, m in enumerate(rest) if m["role"] == "user"), 0)
+        if first_user > 0:
+            rest = rest[first_user:]
         drop = rest[:len(rest) - keep]
         # 只取被裁对话的后 8 条（限制压缩输入，加快速度）
         dialog = []
@@ -483,7 +488,15 @@ def llm_once(messages, num_ctx=4096, think=False):
 def call_openai_stream(messages):
     """流式对话（OpenAI 兼容，如硅基流动）。UI 逻辑与 Ollama 版一致：
     思考折叠/中转词/按键。返回 (msg, is_tool, prompt_tokens)"""
-    payload = {"model": MODEL, "messages": messages, "stream": True,
+    # 发送前规整：删除孤立的 tool 消息（前一条不是带 tool_calls 的 assistant）
+    clean_msgs = []
+    for i, m in enumerate(messages):
+        if m["role"] == "tool":
+            prev = messages[i - 1] if i > 0 else None
+            if not (prev and prev.get("tool_calls")):
+                continue
+        clean_msgs.append(m)
+    payload = {"model": MODEL, "messages": clean_msgs, "stream": True,
                "temperature": 0.7, "tools": TOOLS_SCHEMA}
     # thinking 参数仅 qwen3（硅基流动）传；deepseek-chat 是 non-thinking 模型，
     # 传了 thinking 偶发 400（官方文档仅 reasoner 支持）
