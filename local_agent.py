@@ -468,6 +468,9 @@ def llm_once(messages, num_ctx=4096, think=False):
         headers = {"Authorization": "Bearer " + API_KEY}
         resp = requests.post(API_BASE + "/chat/completions", json=payload,
                              headers=headers, timeout=(10, 300))
+        if resp.status_code != 200:
+            detail = resp.text[:300] if resp.text else "(无响应体)"
+            raise RuntimeError(f"API {resp.status_code}: {detail}")
         return resp.json()["choices"][0]["message"]["content"].strip()
     req = {"model": MODEL, "messages": messages, "stream": False,
            "options": {"num_ctx": num_ctx}}
@@ -489,7 +492,9 @@ def call_openai_stream(messages):
     headers = {"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"}
     resp = requests.post(API_BASE + "/chat/completions", json=payload, headers=headers,
                          stream=True, timeout=(10, 600))
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        detail = resp.text[:300] if resp.text else "(无响应体)"
+        raise RuntimeError(f"API {resp.status_code}: {detail}")
 
     import queue as _queue
     import threading
