@@ -69,8 +69,10 @@ def is_openai_mode():
     """API_KEY 存在 → OpenAI 兼容（云端）；否则 Ollama（本地）"""
     return bool(API_KEY)
 MAX_TURNS = 20       # 单轮对话中工具调用的最大轮数（写代码/分段写文件场景需要多次调用）
-MAX_HISTORY = 16     # 滑动窗口：条数兜底（16 条，含工具结果易超窗）
-NUM_CTX = 16384      # 上下文窗口（token）
+# 上下文按 provider 适配：云端（OpenAI 兼容）上下文大，本地 Ollama 小。
+# .env 里 NUM_CTX / MAX_HISTORY 可覆盖。
+NUM_CTX = int(os.environ.get("NUM_CTX", "128000" if is_openai_mode() else "16384"))
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", "48" if is_openai_mode() else "16"))
 CTX_TRIM_RATIO = 0.50   # 上下文用到 50% 时触发记忆沉淀
 CTX_KEEP_RATIO = 0.20   # 沉淀后裁剪到约 20%（保留最近 40% 条数近似）
 AGENT_DIR = os.path.join(os.path.expanduser("~"), ".agent")   # 数据目录：默认 ~/.agent/（可用命令行参数覆盖）
