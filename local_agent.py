@@ -48,7 +48,7 @@ def load_env():
     for p in candidates:
         try:
             if os.path.exists(p):
-                for line in open(p, encoding="utf-8"):
+                for line in open(p, encoding="utf-8-sig"):
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
