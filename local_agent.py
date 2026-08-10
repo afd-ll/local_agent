@@ -568,7 +568,9 @@ def call_openai_stream(messages):
         if delta.get("tool_calls"):
             for tc in delta["tool_calls"]:
                 idx = tc.get("index", 0)
-                acc = tool_calls_acc.setdefault(idx, {"name": "", "args": ""})
+                acc = tool_calls_acc.setdefault(idx, {"name": "", "args": "", "id": ""})
+                if tc.get("id"):
+                    acc["id"] = tc["id"]
                 fn = tc.get("function") or {}
                 acc["name"] += fn.get("name") or ""
                 acc["args"] += fn.get("arguments") or ""
@@ -597,7 +599,8 @@ def call_openai_stream(messages):
         tcs = []
         for idx in sorted(tool_calls_acc):
             acc = tool_calls_acc[idx]
-            tcs.append({"function": {"name": acc["name"], "arguments": acc["args"]}})
+            tcs.append({"id": acc["id"], "type": "function",
+                        "function": {"name": acc["name"], "arguments": acc["args"]}})
         tool_calls = tcs
         if think_parts and not think_ended and not think_expanded:
             tl = len("".join(think_parts))
@@ -873,7 +876,10 @@ def main():
                     result = run_tool(func_name, args, ctx)
                     elapsed = time.time() - t_tool
                     print(f"{GREEN}[调用工具] {func_name}({json.dumps(args, ensure_ascii=False)}) ({elapsed:.1f}s){RESET}")
-                    messages.append({"role": "tool", "content": result})
+                    tool_msg = {"role": "tool", "content": result}
+                    if tc.get("id"):
+                        tool_msg["tool_call_id"] = tc["id"]
+                    messages.append(tool_msg)
                 continue
             else:
                 messages.append(msg)
