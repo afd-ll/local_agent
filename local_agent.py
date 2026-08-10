@@ -37,8 +37,15 @@ from tools import load_all_tools, build_tools_schema, TOOL_REGISTRY
 load_all_tools()
 TOOLS_SCHEMA = build_tools_schema()
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "qwen3:4b"
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
+MODEL = os.environ.get("MODEL", "qwen3:4b")
+API_KEY = os.environ.get("API_KEY", "")                     # 硅基流动 key：存在时走 OpenAI 兼容模式
+API_BASE = os.environ.get("API_BASE", "https://api.siliconflow.cn/v1")
+
+
+def is_openai_mode():
+    """API_KEY 存在 → OpenAI 兼容（云端）；否则 Ollama（本地）"""
+    return bool(API_KEY)
 MAX_TURNS = 20       # 单轮对话中工具调用的最大轮数（写代码/分段写文件场景需要多次调用）
 MAX_HISTORY = 16     # 滑动窗口：条数兜底（16 条，含工具结果易超窗）
 NUM_CTX = 16384      # 上下文窗口（token）
@@ -278,16 +285,7 @@ def compress_memory(mem):
         "保留用户偏好、重要事实、常用配置，删除过时细节。只输出压缩结果：\n" + text
     )
     try:
-        req = {
-            "model": MODEL, "messages": [
-                {"role": "user", "content": prompt}
-            ], "stream": False,
-            "options": {"num_ctx": 4096}   # 压缩任务小上下文，不与主对话抢显存
-        }
-        if "qwen3" in MODEL:
-            req["think"] = False
-        resp = requests.post(OLLAMA_URL, json=req, timeout=(10, 300))
-        summary = resp.json()["message"]["content"].strip()
+        summary = llm_once([{"role": "user", "content": prompt}], num_ctx=4096, think=False)
         if summary:
             old_sum = mem.get("compressed", "")
             mem["compressed"] = (old_sum + "\n" + summary).strip() if old_sum else summary
@@ -321,16 +319,7 @@ def condense_dialog(text):
         "最多 5 条，每条一句话，忽略寒暄。只输出要点列表：\n" + text
     )
     try:
-        req = {
-            "model": MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "options": {"num_ctx": 4096}   # 沉淀任务小上下文，不与主对话抢显存
-        }
-        if "qwen3" in MODEL:
-            req["think"] = False
-        resp = requests.post(OLLAMA_URL, json=req, timeout=(10, 300))
-        summary = resp.json()["message"]["content"].strip()
+        summary = llm_once([{"role": "user", "content": prompt}], num_ctx=4096, think=False)
         return summary if summary else None
     except Exception as e:
         print(f"{RED} 对话沉淀失败: {e}{RESET}")
@@ -445,6 +434,156 @@ def read_keys():
     return keys
 
 # ---------- 调用 Ollama（流式 + 灰色思考 + Q 打断） ----------
+def llm_once(messages, num_ctx=4096, think=False):
+    """非流式单次请求（记忆压缩/沉淀用）。OpenAI 模式走云端，否则走 Ollama"""
+    if is_openai_mode():
+        payload = {"model": MODEL, "messages": messages, "stream": False,
+                   "temperature": 0.3, "max_tokens": 1024}
+        if "qwen3" in MODEL.lower() or "deepseek" in MODEL.lower():
+            payload["thinking"] = {"type": "enabled"} if think else {"type": "disabled"}
+        headers = {"Authorization": "Bearer " + API_KEY}
+        resp = requests.post(API_BASE + "/chat/completions", json=payload,
+                             headers=headers, timeout=(10, 300))
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    req = {"model": MODEL, "messages": messages, "stream": False,
+           "options": {"num_ctx": num_ctx}}
+    if "qwen3" in MODEL.lower():
+        req["think"] = think
+    resp = requests.post(OLLAMA_URL, json=req, timeout=(10, 300))
+    return resp.json()["message"]["content"].strip()
+
+
+def call_openai_stream(messages):
+    """流式对话（OpenAI 兼容，如硅基流动）。UI 逻辑与 Ollama 版一致：
+    思考折叠/中转词/按键。返回 (msg, is_tool, prompt_tokens)"""
+    payload = {"model": MODEL, "messages": messages, "stream": True, "temperature": 0.7}
+    if "qwen3" in MODEL.lower() or "deepseek" in MODEL.lower():
+        payload["thinking"] = {"type": "enabled"}
+    headers = {"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"}
+    resp = requests.post(API_BASE + "/chat/completions", json=payload, headers=headers,
+                         stream=True, timeout=(10, 600))
+    resp.raise_for_status()
+
+    import queue as _queue
+    import threading
+    q = _queue.Queue()
+
+    def _reader():
+        try:
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                line = line.decode("utf-8", "replace") if isinstance(line, bytes) else line
+                if line.startswith("data: "):
+                    d = line[6:].strip()
+                    if d == "[DONE]":
+                        break
+                    try:
+                        q.put(json.loads(d))
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            q.put({"__error__": str(e)})
+        finally:
+            q.put({"__done__": True})
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+    content_parts, think_parts = [], []
+    tool_calls_acc = {}
+    prompt_tokens = 0
+    finish_seen = False
+    think_expanded = False
+    think_ended = False
+    think_start_ts = time.time()
+    last_activity = time.time()
+    tool_calls = None
+
+    while True:
+        keys = read_keys()
+        if 'q' in keys:
+            print(f"\r{RED} 已打断{RESET}   ", flush=True)
+            resp.close()
+            return {"role": "assistant", "content": "".join(content_parts)}, False, 0
+        if 't' in keys:
+            think_expanded = not think_expanded
+            if think_expanded:
+                total = len("".join(think_parts))
+                if total > 500:
+                    print(f"\r{RESET}\n{GRAY} [展开思考 · 共 {total} 字 · 显示末尾 300 字]{RESET}\n", end="", flush=True)
+                    print(f"{GRAY}{''.join(think_parts)[-300:]}{RESET}", end="", flush=True)
+                else:
+                    print(f"\r{RESET}\n{GRAY} [展开思考]{RESET}\n", end="", flush=True)
+                    print(f"{GRAY}{''.join(think_parts)}{RESET}", end="", flush=True)
+            else:
+                print(f"{RESET}\n{GRAY} [收起思考]{RESET}", end="", flush=True)
+
+        try:
+            data = q.get(timeout=0.2)
+            last_activity = time.time()
+        except _queue.Empty:
+            if finish_seen:
+                break
+            idle = time.time() - last_activity
+            if think_parts and not tool_calls and not content_parts and idle > 2:
+                print(f"\r{GRAY} 正在生成工具调用...（已 {idle:.0f}s / Q 打断）{RESET}", end="", flush=True)
+            continue
+
+        if data.get("__done__"):
+            break
+        if data.get("__error__"):
+            print(f"\n{RED} 流错误: {data['__error__']}{RESET}")
+            break
+        if data.get("usage"):
+            prompt_tokens = data["usage"].get("prompt_tokens", 0) or prompt_tokens
+
+        choices = data.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        if delta.get("tool_calls"):
+            for tc in delta["tool_calls"]:
+                idx = tc.get("index", 0)
+                acc = tool_calls_acc.setdefault(idx, {"name": "", "args": ""})
+                fn = tc.get("function") or {}
+                acc["name"] += fn.get("name") or ""
+                acc["args"] += fn.get("arguments") or ""
+        reasoning = delta.get("reasoning_content")
+        if reasoning:
+            think_parts.append(reasoning)
+            if think_expanded:
+                print(f"{GRAY}{reasoning}{RESET}", end="", flush=True)
+            else:
+                tl = len("".join(think_parts))
+                print(f"\r{GRAY} 思考中... {tl} 字（T 展开 / Q 打断）{RESET}", end="", flush=True)
+        piece = delta.get("content")
+        if piece:
+            if not think_ended:
+                think_ended = True
+                if think_parts and not think_expanded:
+                    tl = len("".join(think_parts))
+                    print(f"\r{GRAY} 思考完成：{tl} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
+                print(f"{RESET}\n", end="", flush=True)
+            content_parts.append(piece)
+            print(render_md(piece, md_state), end="", flush=True)
+        if choices[0].get("finish_reason") in ("stop", "tool_calls"):
+            finish_seen = True
+
+    if tool_calls_acc:
+        tcs = []
+        for idx in sorted(tool_calls_acc):
+            acc = tool_calls_acc[idx]
+            tcs.append({"function": {"name": acc["name"], "arguments": acc["args"]}})
+        tool_calls = tcs
+        if think_parts and not think_ended and not think_expanded:
+            tl = len("".join(think_parts))
+            print(f"\r{GRAY} 思考完成：{tl} 字 · {time.time()-think_start_ts:.1f}s（T 展开）{RESET}", end="", flush=True)
+        print(f"{RESET}", flush=True)
+        return {"role": "assistant", "content": "".join(content_parts), "tool_calls": tool_calls}, True, prompt_tokens
+    print(f"{RESET}", flush=True)
+    return {"role": "assistant", "content": "".join(content_parts)}, False, prompt_tokens
+
+
 def call_ollama_stream(messages):
     """流式调用 Ollama。后台线程读流 + 队列轮询——
     队列空档（模型静默）时显示"中转词"判定阶段：思考中/生成工具调用中，不用靠猜超时"""
@@ -455,7 +594,7 @@ def call_ollama_stream(messages):
         "stream": True,
         "options": {"num_ctx": NUM_CTX}
     }
-    if "qwen3" in MODEL:
+    if "qwen3" in MODEL.lower():
         payload["think"] = True   # qwen3 专属：思考模式；qwen2.5 等模型传了会 400
     # 读超时 600s 纯兜底（中转词已保证阶段可见，超时只防真死锁）
     resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(10, 600))
@@ -683,7 +822,10 @@ def main():
             turns += 1
             t_round = time.time()   # 本轮耗时计时
             try:
-                msg, is_tool, prompt_tokens = call_ollama_stream(messages)
+                if is_openai_mode():
+                    msg, is_tool, prompt_tokens = call_openai_stream(messages)
+                else:
+                    msg, is_tool, prompt_tokens = call_ollama_stream(messages)
                 if prompt_tokens:
                     last_prompt_tokens = prompt_tokens
             except requests.exceptions.ReadTimeout:
