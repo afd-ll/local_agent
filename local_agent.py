@@ -37,6 +37,28 @@ from tools import load_all_tools, build_tools_schema, TOOL_REGISTRY
 load_all_tools()
 TOOLS_SCHEMA = build_tools_schema()
 
+
+def load_env():
+    """读取 .env 配置文件（~/.agent/.env 优先；不提交 Git，key 不进仓库）。
+    环境变量已设置的优先于 .env（setdefault 语义）"""
+    candidates = [
+        os.path.join(os.path.expanduser("~"), ".agent", ".env"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+    ]
+    for p in candidates:
+        try:
+            if os.path.exists(p):
+                for line in open(p, encoding="utf-8"):
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip())
+        except Exception:
+            pass
+
+
+load_env()
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
 MODEL = os.environ.get("MODEL", "qwen3:4b")
 API_KEY = os.environ.get("API_KEY", "")                     # 硅基流动 key：存在时走 OpenAI 兼容模式
