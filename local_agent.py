@@ -480,7 +480,8 @@ def llm_once(messages, num_ctx=4096, think=False):
 def call_openai_stream(messages):
     """流式对话（OpenAI 兼容，如硅基流动）。UI 逻辑与 Ollama 版一致：
     思考折叠/中转词/按键。返回 (msg, is_tool, prompt_tokens)"""
-    payload = {"model": MODEL, "messages": messages, "stream": True, "temperature": 0.7}
+    payload = {"model": MODEL, "messages": messages, "stream": True,
+               "temperature": 0.7, "tools": TOOLS_SCHEMA}
     if "qwen3" in MODEL.lower() or "deepseek" in MODEL.lower():
         payload["thinking"] = {"type": "enabled"}
     headers = {"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"}
